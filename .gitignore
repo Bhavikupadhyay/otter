@@ -1,0 +1,53 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+
+# Ninja
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# Compiled binaries
+otter_r
+otter_d
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# Clang tooling
+compile_commands.json
+.clangd/
+.cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.ccls-cache/
+
+# Test artifacts
+Testing/
+CTestCostData.txt
+
+# Python (if any scripts)
+__pycache__/
+*.pyc
