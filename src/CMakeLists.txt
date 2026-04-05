@@ -5,4 +5,4 @@ target_include_directories(otter_core
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Sources are appended here as files are added in subsequent steps.
+target_sources(otter_core PRIVATE buffer.cpp)
