@@ -7,7 +7,7 @@ namespace otter {
 Buffer::Buffer(std::size_t bytes, MemoryManager* mm, const void* init_data)
     : size_(bytes), device_(mm->device()), allocator_(mm)
 {
-    data_ = static_cast<std::byte*>(mm->allocate(bytes));
+    data_ = mm->allocate(bytes); // allocate() returns std::byte* — no cast needed
     if (init_data)
         std::memcpy(data_, init_data, bytes);
     else
