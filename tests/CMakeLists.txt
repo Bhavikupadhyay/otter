@@ -1,6 +1,7 @@
 add_executable(otter_tests
     main.cpp
     test_memory.cpp
+    test_kernel.cpp
 )
 
 target_link_libraries(otter_tests PRIVATE otter_core)
@@ -10,5 +11,4 @@ target_include_directories(otter_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
-enable_testing()
 add_test(NAME otter_tests COMMAND otter_tests)

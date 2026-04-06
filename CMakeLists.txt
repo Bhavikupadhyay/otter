@@ -20,5 +20,7 @@ add_compile_options($<$<CONFIG:Release>:-DNDEBUG>)
 
 add_link_options($<$<CONFIG:Debug>:-fsanitize=address,undefined>)
 
+enable_testing()
+
 add_subdirectory(src)
 add_subdirectory(tests)

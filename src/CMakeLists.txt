@@ -6,5 +6,7 @@ target_include_directories(otter_core
 )
 
 target_sources(otter_core PRIVATE buffer.cpp)
+target_sources(otter_core PRIVATE backend.cpp)
 
 add_subdirectory(memory)
+add_subdirectory(kernels)
