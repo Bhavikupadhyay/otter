@@ -13,7 +13,7 @@ inline std::size_t next_power_of_2(std::size_t n) noexcept {
     n |= n >> 4;
     n |= n >> 8;
     n |= n >> 16;
-    n |= n >> 32;
+    if constexpr (sizeof(std::size_t) >= 8) n |= n >> 32;
     return ++n;
 }
 

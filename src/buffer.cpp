@@ -1,13 +1,14 @@
 #include "otter/memory/buffer.h"
+#include "otter/kernel/backend.h"
 
 #include <cstring>
 
 namespace otter {
 
-Buffer::Buffer(std::size_t bytes, MemoryManager* mm, const void* init_data)
-    : size_(bytes), device_(mm->device()), allocator_(mm)
+Buffer::Buffer(std::size_t bytes, Backend& backend, const void* init_data)
+    : data_(nullptr), size_(bytes), backend_(&backend)
 {
-    data_ = mm->allocate(bytes); // allocate() returns std::byte* — no cast needed
+    data_ = backend.memory_manager()->allocate(bytes);
     if (init_data)
         std::memcpy(data_, init_data, bytes);
     else
@@ -15,7 +16,7 @@ Buffer::Buffer(std::size_t bytes, MemoryManager* mm, const void* init_data)
 }
 
 Buffer::~Buffer() noexcept {
-    allocator_->free(data_);
+    backend_->memory_manager()->free(data_);
 }
 
 } // namespace otter

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -35,13 +36,24 @@ inline std::vector<std::size_t> broadcast_shape(
 // Dimensions being broadcast (size-1 or prepended) receive stride 0.
 // The kernel reads the same element repeatedly for those dimensions.
 //
-// Precondition: broadcast_shape(orig_shape, target_shape) == target_shape.
+// Precondition: orig_shape and target_shape must be broadcast-compatible
+// (i.e. broadcast_shape(orig_shape, target_shape) == target_shape).
+// Call broadcast_shape() first to validate; it throws on incompatible shapes.
 inline std::vector<std::size_t> broadcast_strides(
     const std::vector<std::size_t>& orig_shape,
     const std::vector<std::size_t>& orig_stride,
     const std::vector<std::size_t>& target_shape)
 {
     const std::size_t tndim  = target_shape.size();
+    assert(orig_shape.size() <= tndim &&
+           "broadcast_strides: orig_shape cannot be larger than target_shape");
+    // Validate broadcast compatibility: every non-prepended original dim must
+    // equal the target dim or be 1. Caller must have called broadcast_shape() first.
+    for (std::size_t i = 0; i < orig_shape.size(); ++i) {
+        assert((orig_shape[i] == target_shape[i + (tndim - orig_shape.size())] ||
+                orig_shape[i] == 1) &&
+               "broadcast_strides: shapes are not broadcast-compatible at this dimension");
+    }
     const std::size_t offset = tndim - orig_shape.size();
     std::vector<std::size_t> strides(tndim, 0);
     for (std::size_t i = 0; i < tndim; ++i) {
