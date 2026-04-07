@@ -10,8 +10,8 @@ namespace otter {
 // Backend — pairs a MemoryManager with a KernelEngine for one device.
 //
 // Owns both resources. Users obtain a Backend via a factory such as
-// make_cpu_backend() rather than constructing one directly. A CUDA backend
-// would provide make_cuda_backend() following the same pattern.
+// cpu_backend() rather than constructing one directly. A CUDA backend
+// would provide cuda_backend() following the same pattern.
 //
 // Backend* is what Tensor stores (non-owning). The Backend must outlive
 // all Tensors allocated through it.

@@ -4,15 +4,10 @@
 #include <memory>
 #include <stdexcept>
 
+#include "otter/tensor.h"
 #include "otter/kernel/kernel_engine.h"
 #include "otter/kernel/backend.h"
 #include "memory/cpu_memory_manager.h"
-
-// Minimal Tensor stub — satisfies KernelEngine dispatch signatures.
-// Removed and replaced by #include "otter/tensor.h" in Step 5.
-namespace otter {
-class Tensor {};
-} // namespace otter
 
 namespace otter::test {
 

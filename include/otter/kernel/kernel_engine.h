@@ -16,6 +16,7 @@ enum class KernelType {
     Add,
     Mul,
     Neg,
+    Sum,
     // Sub, Div, Relu, Exp, Log — added as operations are implemented
 };
 

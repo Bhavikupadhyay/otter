@@ -3,10 +3,28 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 
 #include "otter/memory/buffer.h"
+#include "otter/kernel/backend.h"
+#include "otter/kernel/kernel_engine.h"
 #include "memory/cpu_memory_manager.h"
+
+namespace {
+// Minimal KernelEngine for Buffer tests — no dispatchers registered.
+// Instantiated here only to satisfy Backend's constructor requirement.
+struct NullEngine : otter::KernelEngine {};
+
+// Returns a Backend owning a CPUMemoryManager + NullEngine.
+// The caller takes ownership; the backend must outlive any Buffers created from it.
+std::unique_ptr<otter::Backend> make_test_backend() {
+    return std::make_unique<otter::Backend>(
+        std::make_unique<otter::CPUMemoryManager>(),
+        std::make_unique<NullEngine>()
+    );
+}
+} // namespace
 
 namespace otter::test {
 
@@ -152,49 +170,44 @@ void test_allocator_returned_pointer_is_aligned() {
 
 void test_buffer_construction_and_zero_init() {
     std::cout << "[Test 9] Buffer allocates, zero-initialises, and frees on destruction\n";
-    CPUMemoryManager mm;
+    auto backend = make_test_backend();
+    constexpr std::size_t sz = 4ULL * 1024ULL * 1024ULL;
     {
-        // 4 MB — large path
-        Buffer buf(4ULL * 1024ULL * 1024ULL, &mm);
-        CHECK(buf.size()   == 4ULL * 1024ULL * 1024ULL);
-        CHECK(buf.device() == Device::CPU);
-        CHECK(mm.bytes_allocated() == 4ULL * 1024ULL * 1024ULL);
+        Buffer buf(sz, *backend);
+        CHECK(buf.size()     == sz);
+        CHECK(&buf.backend() == backend.get());
+        CHECK(backend->memory_manager()->bytes_allocated() == sz);
     }
     // Buffer destructor must have freed the allocation
-    CHECK(mm.bytes_allocated() == 0);
+    CHECK(backend->memory_manager()->bytes_allocated() == 0);
 }
 
 // ── Test 10 ──────────────────────────────────────────────────────────────────
 
 void test_buffer_init_data_copied() {
     std::cout << "[Test 10] Buffer copies init_data into allocation\n";
-    CPUMemoryManager mm;
+    auto backend = make_test_backend();
     const double src[4] = {1.0, 2.0, 3.0, 4.0};
-    Buffer buf(sizeof(src), &mm, static_cast<const void*>(src));
-    // Verify via a second Buffer reading the same bytes through a fresh copy
-    // We can't read data directly (no Passkey<Tensor> — by design).
-    // Instead verify indirectly: a second allocation with memcmp after copy.
-    // Simple check: re-allocate and memcpy, then compare.
-    // This test just confirms construction doesn't crash and size is correct.
-    CHECK(buf.size()   == sizeof(src));
-    CHECK(buf.device() == Device::CPU);
-    CHECK(mm.bytes_allocated() == sizeof(src));
+    Buffer buf(sizeof(src), *backend, static_cast<const void*>(src));
+    CHECK(buf.size()     == sizeof(src));
+    CHECK(&buf.backend() == backend.get());
+    CHECK(backend->memory_manager()->bytes_allocated() == sizeof(src));
 }
 
 // ── Test 11 ──────────────────────────────────────────────────────────────────
 
 void test_buffer_small_path_frees_immediately() {
     std::cout << "[Test 11] small Buffer (< 1 MB) does not grow bytes_reserved\n";
-    CPUMemoryManager mm;
-    const std::size_t reserved_before = mm.bytes_reserved();
+    auto backend = make_test_backend();
+    const std::size_t reserved_before = backend->memory_manager()->bytes_reserved();
     {
-        Buffer buf(256, &mm); // 256 bytes — small path
-        CHECK(mm.bytes_allocated() == 256);
+        Buffer buf(256, *backend); // 256 bytes — small path
+        CHECK(backend->memory_manager()->bytes_allocated() == 256);
         // Small path never touches the mmap pool
-        CHECK(mm.bytes_reserved() == reserved_before);
+        CHECK(backend->memory_manager()->bytes_reserved() == reserved_before);
     }
-    CHECK(mm.bytes_allocated() == 0);
-    CHECK(mm.bytes_reserved()  == reserved_before);
+    CHECK(backend->memory_manager()->bytes_allocated() == 0);
+    CHECK(backend->memory_manager()->bytes_reserved()  == reserved_before);
 }
 
 // ── Test 12 ──────────────────────────────────────────────────────────────────

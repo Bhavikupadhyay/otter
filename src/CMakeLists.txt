@@ -1,4 +1,4 @@
-add_library(otter_core STATIC otter.cpp)
+add_library(otter_core STATIC otter.cpp tensor.cpp)
 
 target_include_directories(otter_core
     PUBLIC  ${PROJECT_SOURCE_DIR}/include
@@ -10,3 +10,4 @@ target_sources(otter_core PRIVATE backend.cpp)
 
 add_subdirectory(memory)
 add_subdirectory(kernels)
+add_subdirectory(backends)

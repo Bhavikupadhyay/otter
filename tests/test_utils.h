@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 
+
 namespace otter::test {
 
 inline int tests_run    = 0;

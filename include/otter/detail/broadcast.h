@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -42,6 +43,8 @@ inline std::vector<std::size_t> broadcast_strides(
     const std::vector<std::size_t>& target_shape)
 {
     const std::size_t tndim  = target_shape.size();
+    assert(orig_shape.size() <= tndim &&
+           "broadcast_strides: orig_shape cannot be larger than target_shape");
     const std::size_t offset = tndim - orig_shape.size();
     std::vector<std::size_t> strides(tndim, 0);
     for (std::size_t i = 0; i < tndim; ++i) {
