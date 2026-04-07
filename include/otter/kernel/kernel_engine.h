@@ -10,14 +10,22 @@ namespace otter {
 class Buffer;   // forward — full def in src/kernels/dispatcher.h only
 class Tensor;   // forward — dispatch signatures only; full def not needed here
 
-// Identifies a kernel op. Both binary and unary ops share this enum.
+// Identifies a kernel primitive. Both binary and unary dispatch share this enum.
 // Extended as new ops are implemented — zero changes to KernelEngine.
 enum class KernelType {
+    // ── Binary element-wise ─────────────────────────────────────────────────
     Add,
     Mul,
+    // Sub, Div — added when their Operations are split in
+
+    // ── Unary element-wise ──────────────────────────────────────────────────
     Neg,
-    Sum,
-    // Sub, Div, Relu, Exp, Log — added as operations are implemented
+    // Exp, Log, Relu — added when their Operations are split in
+
+    // ── Reductions (unary signature, output has fewer / different dims) ─────
+    ReduceSum,  // reduce all elements to scalar
+    ReduceTo,   // scatter-accumulate to a target shape (broadcast backward)
+    // ReduceMean, ReduceMax, ReduceMin — added when their Operations are split in
 };
 
 // KernelEngine — concrete kernel dispatch registry.
@@ -77,16 +85,6 @@ public:
         FillDispatcher(FillDispatcher&&)                      = delete;
         FillDispatcher& operator=(FillDispatcher&&)           = delete;
         virtual void call(Tensor& t, double value) const = 0;
-    };
-
-    struct ReduceDispatcher {
-        ReduceDispatcher()                                      = default;
-        virtual ~ReduceDispatcher()                             = default;
-        ReduceDispatcher(const ReduceDispatcher&)               = delete;
-        ReduceDispatcher& operator=(const ReduceDispatcher&)    = delete;
-        ReduceDispatcher(ReduceDispatcher&&)                    = delete;
-        ReduceDispatcher& operator=(ReduceDispatcher&&)         = delete;
-        virtual void call(const Tensor& src, Tensor& dst) const = 0;
     };
 
     struct MatMulDispatcher {
@@ -155,12 +153,6 @@ public:
         fill_->call(t, value);
     }
 
-    void dispatch_reduce_to(const Tensor& src, Tensor& dst) const {
-        if (!reduce_)
-            throw std::runtime_error("KernelEngine: reduce_to dispatcher not registered");
-        reduce_->call(src, dst);
-    }
-
     void dispatch_matmul(const Tensor& a, const Tensor& b, Tensor& out) const {
         if (!matmul_)
             throw std::runtime_error("KernelEngine: matmul dispatcher not registered");
@@ -193,9 +185,6 @@ protected:
     void register_fill(std::unique_ptr<FillDispatcher> d) {
         fill_ = std::move(d);
     }
-    void register_reduce_to(std::unique_ptr<ReduceDispatcher> d) {
-        reduce_ = std::move(d);
-    }
     void register_matmul(std::unique_ptr<MatMulDispatcher> d) {
         matmul_ = std::move(d);
     }
@@ -218,7 +207,6 @@ private:
     std::map<KernelType, std::unique_ptr<BinaryDispatcher>> binary_;
     std::map<KernelType, std::unique_ptr<UnaryDispatcher>>  unary_;
     std::unique_ptr<FillDispatcher>        fill_;
-    std::unique_ptr<ReduceDispatcher>      reduce_;
     std::unique_ptr<MatMulDispatcher>      matmul_;
     std::unique_ptr<CopyDispatcher>        copy_;
     std::unique_ptr<ElementReadDispatcher> element_read_;

@@ -44,7 +44,7 @@ struct StubFillDispatcher : KernelEngine::FillDispatcher {
     void call(Tensor&, double) const override   { g_last_called_id = id; }
 };
 
-struct StubReduceDispatcher : KernelEngine::ReduceDispatcher {
+struct StubReduceDispatcher : KernelEngine::UnaryDispatcher {
     int id;
     explicit StubReduceDispatcher(int i) : id(i) { ++g_dispatcher_live; }
     ~StubReduceDispatcher() override              { --g_dispatcher_live; }
@@ -85,7 +85,6 @@ struct TestEngine : KernelEngine {
     using KernelEngine::register_binary;
     using KernelEngine::register_unary;
     using KernelEngine::register_fill;
-    using KernelEngine::register_reduce_to;
     using KernelEngine::register_matmul;
     using KernelEngine::register_copy;
     using KernelEngine::register_element_read;
@@ -117,7 +116,7 @@ void test_engine_empty_registry_throws_on_all_families() {
     CHECK(threw);
 
     threw = false;
-    try { engine.dispatch_reduce_to(a, out); }
+    try { engine.dispatch_unary(KernelType::ReduceTo, a, out); }
     catch (const std::runtime_error&) { threw = true; }
     CHECK(threw);
 
@@ -215,7 +214,7 @@ void test_engine_all_families_route_correctly() {
         TestEngine engine;
         engine.register_unary(KernelType::Neg,   std::make_unique<StubUnaryDispatcher>(10));
         engine.register_fill(                    std::make_unique<StubFillDispatcher>(20));
-        engine.register_reduce_to(               std::make_unique<StubReduceDispatcher>(30));
+        engine.register_unary(KernelType::ReduceTo, std::make_unique<StubReduceDispatcher>(30));
         engine.register_matmul(                  std::make_unique<StubMatMulDispatcher>(40));
         engine.register_copy(                    std::make_unique<StubCopyDispatcher>(50));
         engine.register_element_read(            std::make_unique<StubElementReadDispatcher>(60));
@@ -232,7 +231,7 @@ void test_engine_all_families_route_correctly() {
         CHECK(g_last_called_id == 20);
 
         g_last_called_id = -1;
-        engine.dispatch_reduce_to(a, out);
+        engine.dispatch_unary(KernelType::ReduceTo, a, out);
         CHECK(g_last_called_id == 30);
 
         g_last_called_id = -1;
@@ -298,7 +297,7 @@ void test_engine_destruction_frees_all_dispatchers() {
         engine.register_binary(KernelType::Mul,  std::make_unique<StubBinaryDispatcher>(2));
         engine.register_unary(KernelType::Neg,   std::make_unique<StubUnaryDispatcher>(3));
         engine.register_fill(                    std::make_unique<StubFillDispatcher>(4));
-        engine.register_reduce_to(               std::make_unique<StubReduceDispatcher>(5));
+        engine.register_unary(KernelType::ReduceTo, std::make_unique<StubReduceDispatcher>(5));
         engine.register_matmul(                  std::make_unique<StubMatMulDispatcher>(6));
         engine.register_copy(                    std::make_unique<StubCopyDispatcher>(7));
         engine.register_element_read(            std::make_unique<StubElementReadDispatcher>(8));

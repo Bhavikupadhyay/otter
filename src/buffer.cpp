@@ -6,7 +6,7 @@
 namespace otter {
 
 Buffer::Buffer(std::size_t bytes, Backend& backend, const void* init_data)
-    : size_(bytes), backend_(&backend)
+    : data_(nullptr), size_(bytes), backend_(&backend)
 {
     data_ = backend.memory_manager()->allocate(bytes);
     if (init_data)

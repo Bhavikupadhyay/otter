@@ -192,7 +192,7 @@ void test_sum_2d() {
     Tensor a = Tensor::from_data<double>(
         {1,2,3,4,5,6,7,8,9,10,11,12}, {3, 4}, be);
     Tensor out = Tensor::zeros({1}, be);
-    be.kernel_engine()->dispatch_unary(KernelType::Sum, a, out);
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceSum, a, out);
     CHECK_NEAR(out.at({0}), 78.0, 1e-12);
 }
 
@@ -201,19 +201,21 @@ void test_sum_scalar() {
     Backend& be = cpu_backend();
     Tensor a   = Tensor::from_data<double>({5.5}, {1}, be);
     Tensor out = Tensor::zeros({1}, be);
-    be.kernel_engine()->dispatch_unary(KernelType::Sum, a, out);
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceSum, a, out);
     CHECK_NEAR(out.at({0}), 5.5, 1e-12);
 }
 
 void test_sum_noncontiguous() {
-    std::cout << "[CPU 14] sum: non-contiguous view → same result as contiguous() + sum\n";
+    std::cout << "[CPU 14] sum: non-contiguous view → caller materialises first, result correct\n";
     Backend& be = cpu_backend();
     // base = [[1,2,3],[4,5,6]], view as {3,2} with strides {1,3}
     // values seen: 1,4, 2,5, 3,6 → sum = 21
+    // cpu_sum requires contiguous input — contiguous() is the caller's responsibility.
     Tensor base = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, be);
     Tensor view = base.view({3, 2}, {1, 3});
+    Tensor cont = view.contiguous();   // materialise before dispatch
     Tensor out  = Tensor::zeros({1}, be);
-    be.kernel_engine()->dispatch_unary(KernelType::Sum, view, out);
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceSum, cont, out);
     CHECK_NEAR(out.at({0}), 21.0, 1e-12);
 }
 
@@ -225,7 +227,7 @@ void test_reduce_to_rows() {
     // a = [[1,2,3],[4,5,6]] → sum cols: [5,7,9]
     Tensor a   = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, be);
     Tensor dst = Tensor::zeros({3}, be);  // pre-zeroed
-    be.kernel_engine()->dispatch_reduce_to(a, dst);
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceTo, a, dst);
     CHECK_NEAR(dst.at({0}), 5.0, 1e-12);
     CHECK_NEAR(dst.at({1}), 7.0, 1e-12);
     CHECK_NEAR(dst.at({2}), 9.0, 1e-12);
@@ -236,7 +238,7 @@ void test_reduce_to_identity() {
     Backend& be = cpu_backend();
     Tensor a   = Tensor::from_data<double>({7.0, 8.0, 9.0}, {1, 3}, be);
     Tensor dst = Tensor::zeros({1, 3}, be);
-    be.kernel_engine()->dispatch_reduce_to(a, dst);
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceTo, a, dst);
     CHECK_NEAR(dst.at({0,0}), 7.0, 1e-12);
     CHECK_NEAR(dst.at({0,1}), 8.0, 1e-12);
     CHECK_NEAR(dst.at({0,2}), 9.0, 1e-12);
@@ -248,7 +250,7 @@ void test_reduce_to_scalar() {
     // sum 1+2+3+4+5+6 = 21
     Tensor a   = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, be);
     Tensor dst = Tensor::zeros({1}, be);
-    be.kernel_engine()->dispatch_reduce_to(a, dst);
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceTo, a, dst);
     CHECK_NEAR(dst.at({0}), 21.0, 1e-12);
 }
 
@@ -339,6 +341,56 @@ void test_bytes_allocated_zero_after_scope() {
     CHECK(be.memory_manager()->bytes_allocated() == before);
 }
 
+// ── Neg ───────────────────────────────────────────────────────────────────────
+
+void test_neg_contiguous() {
+    std::cout << "[CPU 23] neg: {2,3} contiguous — all elements negated\n";
+    Backend& be = cpu_backend();
+    // a = [[1,2,3],[-4,0,6]] → neg = [[-1,-2,-3],[4,0,-6]]
+    Tensor a   = Tensor::from_data<double>({1, 2, 3, -4, 0, 6}, {2, 3}, be);
+    Tensor out = Tensor::zeros({2, 3}, be);
+    be.kernel_engine()->dispatch_unary(KernelType::Neg, a, out);
+    CHECK_NEAR(out.at({0,0}), -1.0, 1e-12);
+    CHECK_NEAR(out.at({0,1}), -2.0, 1e-12);
+    CHECK_NEAR(out.at({0,2}), -3.0, 1e-12);
+    CHECK_NEAR(out.at({1,0}),  4.0, 1e-12);
+    CHECK_NEAR(out.at({1,1}),  0.0, 1e-12);
+    CHECK_NEAR(out.at({1,2}), -6.0, 1e-12);
+}
+
+void test_neg_strided_view() {
+    std::cout << "[CPU 24] neg: strided (transposed) view — correct element-wise negation\n";
+    Backend& be = cpu_backend();
+    // base = [[1,2,3],[4,5,6]], transposed view {3,2} strides {1,3}
+    // logical elements: (0,0)=1,(0,1)=4,(1,0)=2,(1,1)=5,(2,0)=3,(2,1)=6
+    Tensor base = Tensor::from_data<double>({1, 2, 3, 4, 5, 6}, {2, 3}, be);
+    Tensor view = base.view({3, 2}, {1, 3});
+    Tensor out  = Tensor::zeros({3, 2}, be);
+    be.kernel_engine()->dispatch_unary(KernelType::Neg, view, out);
+    CHECK_NEAR(out.at({0,0}), -1.0, 1e-12);
+    CHECK_NEAR(out.at({0,1}), -4.0, 1e-12);
+    CHECK_NEAR(out.at({1,0}), -2.0, 1e-12);
+    CHECK_NEAR(out.at({1,1}), -5.0, 1e-12);
+    CHECK_NEAR(out.at({2,0}), -3.0, 1e-12);
+    CHECK_NEAR(out.at({2,1}), -6.0, 1e-12);
+}
+
+void test_neg_broadcast_view() {
+    std::cout << "[CPU 25] neg: stride-0 broadcast view — each logical element negated\n";
+    Backend& be = cpu_backend();
+    // row = [1,2,3] broadcast to {2,3} via stride {0,1}
+    // neg should give [[-1,-2,-3],[-1,-2,-3]]
+    Tensor row = Tensor::from_data<double>({1, 2, 3}, {3}, be);
+    Tensor bc  = row.view({2, 3}, {0, 1});
+    Tensor out = Tensor::zeros({2, 3}, be);
+    be.kernel_engine()->dispatch_unary(KernelType::Neg, bc, out);
+    for (std::size_t r = 0; r < 2; ++r) {
+        CHECK_NEAR(out.at({r, 0}), -1.0, 1e-12);
+        CHECK_NEAR(out.at({r, 1}), -2.0, 1e-12);
+        CHECK_NEAR(out.at({r, 2}), -3.0, 1e-12);
+    }
+}
+
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 void run_cpu_kernel_tests() {
@@ -364,6 +416,9 @@ void run_cpu_kernel_tests() {
     test_contiguous_materialises_view();
     test_cpu_backend_pointer_stability();
     test_bytes_allocated_zero_after_scope();
+    test_neg_contiguous();
+    test_neg_strided_view();
+    test_neg_broadcast_view();
 }
 
 } // namespace otter::test

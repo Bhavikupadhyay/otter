@@ -94,6 +94,14 @@ struct CPUMulDispatcher final : KernelEngine::BinaryDispatcher {
     }
 };
 
+struct CPUNegDispatcher final : KernelEngine::UnaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUNegDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, Tensor& out) const override {
+        engine_->cpu_neg(a, out);
+    }
+};
+
 struct CPUSumDispatcher final : KernelEngine::UnaryDispatcher {
     CPUKernelEngine* engine_;
     explicit CPUSumDispatcher(CPUKernelEngine* e) : engine_(e) {}
@@ -110,9 +118,9 @@ struct CPUCopyDispatcher final : KernelEngine::CopyDispatcher {
     }
 };
 
-struct CPUReduceDispatcher final : KernelEngine::ReduceDispatcher {
+struct CPUReduceToDispatcher final : KernelEngine::UnaryDispatcher {
     CPUKernelEngine* engine_;
-    explicit CPUReduceDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    explicit CPUReduceToDispatcher(CPUKernelEngine* e) : engine_(e) {}
     void call(const Tensor& src, Tensor& dst) const override {
         engine_->cpu_reduce_to(src, dst);
     }
@@ -142,11 +150,12 @@ struct CPUElementReadDispatcher final : KernelEngine::ElementReadDispatcher {
 
 CPUKernelEngine::CPUKernelEngine() {
     register_fill        (std::make_unique<CPUFillDispatcher>        (this));
-    register_binary      (KernelType::Add, std::make_unique<CPUAddDispatcher>(this));
-    register_binary      (KernelType::Mul, std::make_unique<CPUMulDispatcher>(this));
-    register_unary       (KernelType::Sum, std::make_unique<CPUSumDispatcher>(this));
+    register_binary      (KernelType::Add,       std::make_unique<CPUAddDispatcher>      (this));
+    register_binary      (KernelType::Mul,       std::make_unique<CPUMulDispatcher>      (this));
+    register_unary       (KernelType::Neg,       std::make_unique<CPUNegDispatcher>      (this));
+    register_unary       (KernelType::ReduceSum, std::make_unique<CPUSumDispatcher>      (this));
+    register_unary       (KernelType::ReduceTo,  std::make_unique<CPUReduceToDispatcher> (this));
     register_copy        (std::make_unique<CPUCopyDispatcher>        (this));
-    register_reduce_to   (std::make_unique<CPUReduceDispatcher>      (this));
     register_matmul      (std::make_unique<CPUMatMulDispatcher>      (this));
     register_element_read(std::make_unique<CPUElementReadDispatcher> (this));
 }
@@ -196,16 +205,34 @@ void CPUKernelEngine::cpu_mul(const Tensor& a, const Tensor& b, Tensor& out) con
     }
 }
 
+// ── Elementwise unary (neg) ───────────────────────────────────────────────────
+
+void CPUKernelEngine::cpu_neg(const Tensor& a, Tensor& out) const {
+    // Both a and out must be contiguous and same shape — caller ensures this.
+    assert(a.shape() == out.shape());
+    const double* in = raw_const<double>(a.buffer())           + a.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    if (all_contiguous({&a, &out})) {
+        const std::size_t n = a.numel();
+        for (std::size_t i = 0; i < n; ++i) po[i] = -in[i];
+    } else {
+        elementwise_strided(po, in, in,
+                            out.shape(), out.stride(), a.stride(), a.stride(),
+                            [](double x, double /*unused*/) noexcept { return -x; });
+    }
+}
+
 // ── Reduce-all (sum) ──────────────────────────────────────────────────────────
 
 void CPUKernelEngine::cpu_sum(const Tensor& a, Tensor& out) const {
-    // Materialise a contiguous view so we can always scan linearly.
-    // For already-contiguous inputs this is O(1) (returns *this).
-    Tensor src = a.contiguous();
-    const double* in = raw_const<double>(src.buffer()) + src.offset();
+    // Caller (SumOperation::forward) is responsible for passing a contiguous
+    // input — the kernel must not allocate. Assert enforces the contract.
+    assert(a.is_contiguous() && "cpu_sum: input must be contiguous; call contiguous() before dispatch");
+    const double* in = raw_const<double>(a.buffer()) + a.offset();
 
     double s = 0.0;
-    const std::size_t n = src.numel();
+    const std::size_t n = a.numel();
     for (std::size_t i = 0; i < n; ++i) s += in[i];
 
     double* dst = raw_mutable<double>(out.mutable_buffer()) + out.offset();
