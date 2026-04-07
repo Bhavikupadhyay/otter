@@ -288,15 +288,18 @@ void CPUKernelEngine::cpu_copy(const Tensor& src, Tensor& dst) const {
 
 void CPUKernelEngine::cpu_reduce_to(const Tensor& src, Tensor& dst) const {
     assert(dst.is_contiguous() && "cpu_reduce_to: dst must be contiguous");
-    const double* in  = raw_const<double>(src.buffer())        + src.offset();
-    double*       out = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
 
     const auto& out_shape = dst.shape();
     const auto& in_shape  = src.shape();
-    const auto  out_stride = detail::contiguous_strides(out_shape);
-
     const std::size_t out_ndim  = out_shape.size();
     const std::size_t in_ndim   = in_shape.size();
+    assert(in_ndim >= out_ndim &&
+           "cpu_reduce_to: src must have >= dims than dst (src is the broadcast gradient)");
+
+    const double* in  = raw_const<double>(src.buffer())        + src.offset();
+    double*       out = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
+
+    const auto  out_stride = detail::contiguous_strides(out_shape);
     const std::size_t prepended = in_ndim - out_ndim;
 
     const std::size_t numel_in = src.numel();
@@ -337,6 +340,8 @@ void CPUKernelEngine::cpu_reduce_to(const Tensor& src, Tensor& dst) const {
 
 void CPUKernelEngine::cpu_matmul(const Tensor& a, const Tensor& b, Tensor& out) const {
     assert(out.is_contiguous() && "cpu_matmul: out must be contiguous");
+    assert(out.shape().size() >= 2 &&
+           "cpu_matmul: output tensor must be at least 2-dimensional");
     const double* lhs = raw_const<double>(a.buffer())        + a.offset();
     const double* rhs = raw_const<double>(b.buffer())        + b.offset();
     double*       res = raw_mutable<double>(out.mutable_buffer()) + out.offset();

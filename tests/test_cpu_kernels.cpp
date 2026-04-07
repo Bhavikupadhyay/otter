@@ -391,6 +391,98 @@ void test_neg_broadcast_view() {
     }
 }
 
+// ── Regression tests for fixed bugs ──────────────────────────────────────────
+
+// BUG 3 regression: from_data throws (not asserts) when data size mismatches shape
+void test_from_data_throws_on_size_mismatch() {
+    std::cout << "[CPU 26] from_data throws std::invalid_argument when data.size() != product(shape)\n";
+    Backend& be = cpu_backend();
+    bool threw = false;
+    try {
+        // shape {2,3} expects 6 elements; give 4 — must throw even in release
+        static_cast<void>(Tensor::from_data<double>({1.0, 2.0, 3.0, 4.0}, {2, 3}, be));
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// TODO 11.3 + 11.4: Tensor::at() throws (not asserts) in all builds
+void test_at_throws_on_undefined_tensor() {
+    std::cout << "[CPU 30] at(): undefined tensor throws std::runtime_error in all builds\n";
+    Tensor t;  // default-constructed — undefined
+    bool threw = false;
+    try { static_cast<void>(t.at({0})); }
+    catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+void test_at_throws_on_oob_index() {
+    std::cout << "[CPU 31] at(): out-of-bounds index throws std::out_of_range in all builds\n";
+    Backend& be = cpu_backend();
+    Tensor t = Tensor::from_data<double>({1.0, 2.0, 3.0}, {3}, be);
+    bool threw = false;
+    try { static_cast<void>(t.at({5})); }  // index 5 >= size 3
+    catch (const std::out_of_range&) { threw = true; }
+    CHECK(threw);
+}
+
+void test_at_throws_on_wrong_ndim() {
+    std::cout << "[CPU 32] at(): wrong number of indices throws std::out_of_range\n";
+    Backend& be = cpu_backend();
+    Tensor t = Tensor::from_data<double>({1.0, 2.0, 3.0, 4.0}, {2, 2}, be);
+    bool threw = false;
+    try { static_cast<void>(t.at({0})); }  // 1 index for 2-d tensor
+    catch (const std::out_of_range&) { threw = true; }
+    CHECK(threw);
+}
+
+// BUG 4 regression: view() asserts when shape/stride sizes differ
+// This test is debug-only (assert fires); in release it protects via the assert.
+// We verify the happy path here — view() with matching sizes must succeed.
+void test_view_matching_sizes_succeeds() {
+    std::cout << "[CPU 27] view(): matching shape/stride sizes — succeeds without assert\n";
+    Backend& be = cpu_backend();
+    Tensor base = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, be);
+    // Valid view: same element count, different layout interpretation
+    Tensor v = base.view({3, 2}, {1, 3});
+    CHECK(v.shape()[0] == 3);
+    CHECK(v.shape()[1] == 2);
+    CHECK(v.stride()[0] == 1);
+    CHECK(v.stride()[1] == 3);
+    CHECK(!v.is_contiguous());
+}
+
+// BUG 1 regression: reduce_to with stride-0 src (broadcast backward scenario)
+// src is a stride-0 broadcast view; reduce_to must accumulate correctly.
+void test_reduce_to_stride0_src() {
+    std::cout << "[CPU 28] reduce_to: stride-0 broadcast src {2,3} → dst {1,3} — sums broadcast dim\n";
+    Backend& be = cpu_backend();
+    // row = [10, 20, 30] broadcast to {2,3} via stride {0,1}
+    // reduce_to {1,3}: each column sum = 10+10=20, 20+20=40, 30+30=60
+    Tensor row = Tensor::from_data<double>({10.0, 20.0, 30.0}, {3}, be);
+    Tensor bc  = row.view({2, 3}, {0, 1});   // stride-0 broadcast
+    Tensor dst = Tensor::zeros({1, 3}, be);  // pre-zeroed
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceTo, bc, dst);
+    CHECK_NEAR(dst.at({0, 0}), 20.0, 1e-12);
+    CHECK_NEAR(dst.at({0, 1}), 40.0, 1e-12);
+    CHECK_NEAR(dst.at({0, 2}), 60.0, 1e-12);
+}
+
+// BUG 1 regression: reduce_to where src has more dims than dst (prepend reduction)
+void test_reduce_to_prepended_dims() {
+    std::cout << "[CPU 29] reduce_to: {2,3} → {3} — sums over prepended batch dim\n";
+    Backend& be = cpu_backend();
+    // a = [[1,2,3],[4,5,6]] → reduce to {3}: [5,7,9]
+    // (same as test 15 but through the prepend-dim code path: in_ndim=2, out_ndim=1)
+    Tensor a   = Tensor::from_data<double>({1.0,2.0,3.0,4.0,5.0,6.0}, {2, 3}, be);
+    Tensor dst = Tensor::zeros({3}, be);
+    be.kernel_engine()->dispatch_unary(KernelType::ReduceTo, a, dst);
+    CHECK_NEAR(dst.at({0}), 5.0, 1e-12);
+    CHECK_NEAR(dst.at({1}), 7.0, 1e-12);
+    CHECK_NEAR(dst.at({2}), 9.0, 1e-12);
+}
+
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 void run_cpu_kernel_tests() {
@@ -419,6 +511,13 @@ void run_cpu_kernel_tests() {
     test_neg_contiguous();
     test_neg_strided_view();
     test_neg_broadcast_view();
+    test_from_data_throws_on_size_mismatch();
+    test_view_matching_sizes_succeeds();
+    test_reduce_to_stride0_src();
+    test_reduce_to_prepended_dims();
+    test_at_throws_on_undefined_tensor();
+    test_at_throws_on_oob_index();
+    test_at_throws_on_wrong_ndim();
 }
 
 } // namespace otter::test

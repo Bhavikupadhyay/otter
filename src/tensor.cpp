@@ -45,7 +45,8 @@ std::size_t Tensor::numel() const noexcept {
 }
 
 Backend& Tensor::backend() const {
-    assert(defined() && "Tensor::backend() called on undefined tensor");
+    if (!defined())
+        throw std::runtime_error("Tensor::backend() called on undefined tensor");
     return *backend_;
 }
 
@@ -64,13 +65,17 @@ const Buffer& Tensor::buffer() const {
 Tensor Tensor::view(std::vector<std::size_t> new_shape,
                     std::vector<std::size_t> new_stride) const
 {
-    assert(defined() && "Tensor::view() called on undefined tensor");
+    if (!defined())
+        throw std::runtime_error("Tensor::view() called on undefined tensor");
+    assert(new_shape.size() == new_stride.size() &&
+           "Tensor::view(): shape and stride must have the same number of dimensions");
     return Tensor(buffer_, std::move(new_shape), std::move(new_stride),
                   offset_, dtype_, backend_);
 }
 
 Tensor Tensor::contiguous() const {
-    assert(defined() && "Tensor::contiguous() called on undefined tensor");
+    if (!defined())
+        throw std::runtime_error("Tensor::contiguous() called on undefined tensor");
     if (is_contiguous_) return *this;
     // Allocate fresh contiguous buffer and copy elements via the strided copy kernel.
     // The returned tensor is a plain value — no grad history.
@@ -82,13 +87,22 @@ Tensor Tensor::contiguous() const {
 // ── Element access ────────────────────────────────────────────────────────────
 
 double Tensor::at(std::initializer_list<std::size_t> indices) const {
-    assert(defined() && "Tensor::at() called on undefined tensor");
-    assert(indices.size() == shape_.size() && "at(): wrong number of indices");
+    if (!defined())
+        throw std::runtime_error("Tensor::at() called on undefined tensor");
+    if (indices.size() != shape_.size())
+        throw std::out_of_range(
+            "Tensor::at(): wrong number of indices (got " +
+            std::to_string(indices.size()) + ", tensor has " +
+            std::to_string(shape_.size()) + " dimensions)");
 
     std::size_t flat = offset_;
     std::size_t dim  = 0;
     for (std::size_t idx : indices) {
-        assert(idx < shape_[dim] && "at(): index out of bounds");
+        if (idx >= shape_[dim])
+            throw std::out_of_range(
+                "Tensor::at(): index " + std::to_string(idx) +
+                " out of bounds for dimension " + std::to_string(dim) +
+                " with size " + std::to_string(shape_[dim]));
         flat += idx * stride_[dim++];
     }
     // Device-explicit element read — on CUDA this is an explicit device→host transfer.
@@ -98,7 +112,8 @@ double Tensor::at(std::initializer_list<std::size_t> indices) const {
 // ── In-place fill ─────────────────────────────────────────────────────────────
 
 void Tensor::fill_(double value) {
-    assert(defined()         && "Tensor::fill_() called on undefined tensor");
+    if (!defined())
+        throw std::runtime_error("Tensor::fill_() called on undefined tensor");
     assert(is_contiguous_    && "Tensor::fill_() requires a contiguous tensor");
     backend_->kernel_engine()->dispatch_fill(*this, value);
 }

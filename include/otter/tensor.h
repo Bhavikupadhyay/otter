@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <initializer_list>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 #include "otter/core/dtype.h"
@@ -64,6 +65,7 @@ public:
     // Returns a new Tensor sharing the same Buffer with new shape/stride.
     // No autograd — pure layout alias. The returned Tensor is a fresh value
     // with no grad history.
+    // Precondition: new_shape.size() == new_stride.size().
     [[nodiscard]] Tensor view(std::vector<std::size_t> new_shape,
                               std::vector<std::size_t> new_stride) const;
 
@@ -110,7 +112,9 @@ Tensor Tensor::from_data(const std::vector<T>& data,
 {
     std::size_t n = 1;
     for (auto d : shape) n *= d;
-    assert(data.size() == n && "from_data: data.size() != product of shape");
+    if (data.size() != n)
+        throw std::invalid_argument(
+            "Tensor::from_data: data.size() does not match product of shape");
 
     auto strides = detail::contiguous_strides(shape);
     auto buf = std::make_shared<Buffer>(n * sizeof(T), backend,
