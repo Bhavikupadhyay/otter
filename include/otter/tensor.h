@@ -32,6 +32,8 @@ public:
     static Tensor zeros(const std::vector<std::size_t>& shape,
                         Backend& backend,
                         DType dtype = DType::Float64);
+    static Tensor zeros(const std::vector<std::size_t>&, Backend&&,
+                        DType = DType::Float64) = delete;  // Backend must outlive Tensor
 
     // Copies data into a fresh contiguous tensor.
     // T must have a dtype_utils::dtype_of<T> specialisation (currently double).
@@ -39,6 +41,10 @@ public:
     static Tensor from_data(const std::vector<T>& data,
                             const std::vector<std::size_t>& shape,
                             Backend& backend);
+    template<typename T>
+    static Tensor from_data(const std::vector<T>&,
+                            const std::vector<std::size_t>&,
+                            Backend&&) = delete;  // Backend must outlive Tensor
 
     // ── Rule of Zero — shared_ptr<Buffer> manages the allocation ─────────────
     Tensor() = default;
@@ -53,7 +59,7 @@ public:
     [[nodiscard]] DType                           dtype()  const noexcept { return dtype_;  }
     [[nodiscard]] bool is_contiguous()  const noexcept { return is_contiguous_; }
     [[nodiscard]] std::size_t numel()   const noexcept;
-    [[nodiscard]] Backend&    backend() const;  // asserts defined()
+    [[nodiscard]] const Backend& backend() const;  // asserts defined()
 
     // ── Buffer access (internal — for KernelEngine only) ─────────────────────
     // Raw data is further gated by Passkey<KernelEngine> inside Buffer.
@@ -63,8 +69,8 @@ public:
     // ── Layout ───────────────────────────────────────────────────────────────
 
     // Returns a new Tensor sharing the same Buffer with new shape/stride.
-    // No autograd — pure layout alias. The returned Tensor is a fresh value
-    // with no grad history.
+    // Buffer aliasing: mutations via one view are visible in all others sharing it.
+    // No autograd — pure layout alias. The returned Tensor has no grad history.
     // Precondition: new_shape.size() == new_stride.size().
     [[nodiscard]] Tensor view(std::vector<std::size_t> new_shape,
                               std::vector<std::size_t> new_stride) const;

@@ -200,6 +200,9 @@ protected:
     template<typename T>
     [[nodiscard]] const T* raw_const(const Buffer& buf) const noexcept;
 
+    // `const` on raw_const / raw_mutable means: these helpers do not mutate the
+    // KernelEngine registry. raw_mutable returns a mutable pointer into Buffer
+    // storage — callers write through it. The engine's own state is unchanged.
     template<typename T>
     [[nodiscard]] T* raw_mutable(Buffer& buf) const noexcept;
 
