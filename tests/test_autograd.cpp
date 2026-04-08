@@ -194,6 +194,60 @@ void test_autograd_memory_clean() {
     CHECK(be.memory_manager()->bytes_allocated() == 0);
 }
 
+// ── MulOperation forward ─────────────────────────────────────────────────────
+
+void test_mul_forward_values() {
+    std::cout << "[Autograd 14] mul: {2,2} * {2,2} — correct values\n";
+    Backend& be = cpu_backend();
+    // a = [[1,2],[3,4]], b = [[10,20],[30,40]]
+    Tensor a = Tensor::from_data<double>({1, 2, 3, 4},     {2, 2}, be);
+    Tensor b = Tensor::from_data<double>({10, 20, 30, 40}, {2, 2}, be);
+    Tensor c = a.mul(b);
+    CHECK_NEAR(c.at({0, 0}),  10.0, 1e-12);
+    CHECK_NEAR(c.at({0, 1}),  40.0, 1e-12);
+    CHECK_NEAR(c.at({1, 0}),  90.0, 1e-12);
+    CHECK_NEAR(c.at({1, 1}), 160.0, 1e-12);
+}
+
+void test_mul_backward_gradients() {
+    std::cout << "[Autograd 15] mul backward: grad_a = b, grad_b = a (product rule)\n";
+    Backend& be = cpu_backend();
+    // loss = sum(a * b); d loss/d a_i = b_i, d loss/d b_i = a_i
+    Tensor a = Tensor::from_data<double>({2, 3, 4}, {3}, be, /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({5, 6, 7}, {3}, be, /*requires_grad=*/true);
+    a.mul(b).sum().backward();
+    // grad_a = b = [5, 6, 7]
+    CHECK_NEAR(a.grad().at({0}), 5.0, 1e-12);
+    CHECK_NEAR(a.grad().at({1}), 6.0, 1e-12);
+    CHECK_NEAR(a.grad().at({2}), 7.0, 1e-12);
+    // grad_b = a = [2, 3, 4]
+    CHECK_NEAR(b.grad().at({0}), 2.0, 1e-12);
+    CHECK_NEAR(b.grad().at({1}), 3.0, 1e-12);
+    CHECK_NEAR(b.grad().at({2}), 4.0, 1e-12);
+}
+
+void test_add_mul_chain_backward() {
+    std::cout << "[Autograd 16] chain: ((a + b) * c).sum() — product + add rule\n";
+    Backend& be = cpu_backend();
+    // loss = sum((a+b)*c)
+    // d loss/d a_i = c_i
+    // d loss/d b_i = c_i
+    // d loss/d c_i = (a_i + b_i)
+    Tensor a = Tensor::from_data<double>({1, 2}, {2}, be, /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({3, 4}, {2}, be, /*requires_grad=*/true);
+    Tensor c = Tensor::from_data<double>({5, 6}, {2}, be, /*requires_grad=*/true);
+    a.add(b).mul(c).sum().backward();
+    // grad_a = c = [5, 6]
+    CHECK_NEAR(a.grad().at({0}), 5.0, 1e-12);
+    CHECK_NEAR(a.grad().at({1}), 6.0, 1e-12);
+    // grad_b = c = [5, 6]
+    CHECK_NEAR(b.grad().at({0}), 5.0, 1e-12);
+    CHECK_NEAR(b.grad().at({1}), 6.0, 1e-12);
+    // grad_c = (a + b) = [4, 6]
+    CHECK_NEAR(c.grad().at({0}), 4.0, 1e-12);
+    CHECK_NEAR(c.grad().at({1}), 6.0, 1e-12);
+}
+
 // ── Run all ───────────────────────────────────────────────────────────────────
 
 void run_autograd_tests() {
@@ -210,6 +264,9 @@ void run_autograd_tests() {
     test_no_grad_guard_skips_graph();
     test_detach_severs_grad_flow();
     test_autograd_memory_clean();
+    test_mul_forward_values();
+    test_mul_backward_gradients();
+    test_add_mul_chain_backward();
 }
 
 } // namespace otter::test

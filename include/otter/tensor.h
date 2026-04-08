@@ -116,6 +116,7 @@ public:
     // mul() and matmul() are added in steps 4 and 5 respectively.
 
     [[nodiscard]] Tensor add(const Tensor& other) const;
+    [[nodiscard]] Tensor mul(const Tensor& other) const;
     [[nodiscard]] Tensor sum() const;
 
     // ── Autograd methods ──────────────────────────────────────────────────────

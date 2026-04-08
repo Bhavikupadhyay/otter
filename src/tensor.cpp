@@ -7,6 +7,7 @@
 
 #include "otter/ops/operation.h"
 #include "otter/ops/add_operation.h"
+#include "otter/ops/mul_operation.h"
 #include "otter/ops/sum_operation.h"
 
 namespace otter {
@@ -172,6 +173,10 @@ void Tensor::accumulate_grad(const Tensor& incoming) const {
 
 Tensor Tensor::add(const Tensor& other) const {
     return std::make_shared<AddOperation>()->execute({*this, other})[0];
+}
+
+Tensor Tensor::mul(const Tensor& other) const {
+    return std::make_shared<MulOperation>()->execute({*this, other})[0];
 }
 
 Tensor Tensor::sum() const {
