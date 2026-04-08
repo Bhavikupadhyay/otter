@@ -1,6 +1,6 @@
-# Otter
+# OTTER
 
-Otter is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, runs on a pluggable multi-backend kernel layer, and installs as a CMake static library. Otter currently supports float64 on CPU.
+OTTER is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, runs on a pluggable multi-backend kernel layer, and installs as a CMake static library. OTTER currently supports float64 on CPU.
 
 ```cpp
 #include "otter/tensor.h"
