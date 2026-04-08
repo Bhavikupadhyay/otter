@@ -117,6 +117,7 @@ public:
 
     [[nodiscard]] Tensor add(const Tensor& other) const;
     [[nodiscard]] Tensor mul(const Tensor& other) const;
+    [[nodiscard]] Tensor matmul(const Tensor& other) const;
     [[nodiscard]] Tensor sum() const;
 
     // ── Autograd methods ──────────────────────────────────────────────────────

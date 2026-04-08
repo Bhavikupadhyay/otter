@@ -9,6 +9,7 @@ void run_cpu_kernel_tests();
 void run_tensor_tests();
 void run_autograd_tests();
 void run_broadcast_tests();
+void run_matmul_tests();
 } // namespace otter::test
 
 int main() {
@@ -18,6 +19,7 @@ int main() {
     otter::test::run_tensor_tests();
     otter::test::run_autograd_tests();
     otter::test::run_broadcast_tests();
+    otter::test::run_matmul_tests();
 
     std::cout << "\n"
               << otter::test::tests_passed << " / "

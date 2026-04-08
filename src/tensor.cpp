@@ -7,6 +7,7 @@
 
 #include "otter/ops/operation.h"
 #include "otter/ops/add_operation.h"
+#include "otter/ops/matmul_operation.h"
 #include "otter/ops/mul_operation.h"
 #include "otter/ops/sum_operation.h"
 
@@ -177,6 +178,10 @@ Tensor Tensor::add(const Tensor& other) const {
 
 Tensor Tensor::mul(const Tensor& other) const {
     return std::make_shared<MulOperation>()->execute({*this, other})[0];
+}
+
+Tensor Tensor::matmul(const Tensor& other) const {
+    return std::make_shared<MatMulOperation>()->execute({*this, other})[0];
 }
 
 Tensor Tensor::sum() const {
