@@ -44,6 +44,10 @@ public:
     void   cpu_reduce_to   (const Tensor& src, Tensor& dst) const;
     void   cpu_matmul      (const Tensor& a, const Tensor& b, Tensor& out) const;
     double cpu_element_read(const Tensor& t, std::size_t flat_idx) const;
+
+    // In-place primitives — no use_count check; shared visibility is the intent.
+    void   cpu_scale(Tensor& dst, double alpha) const;
+    void   cpu_axpy (Tensor& dst, double alpha, const Tensor& src) const;
 };
 
 } // namespace otter

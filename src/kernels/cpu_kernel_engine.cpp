@@ -222,6 +222,22 @@ struct CPUReluMaskDispatcher final : KernelEngine::UnaryDispatcher {
     void call(const Tensor& a, Tensor& out) const override { engine_->cpu_relu_mask(a, out); }
 };
 
+struct CPUScaleDispatcher final : KernelEngine::ScaleDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUScaleDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(Tensor& dst, double alpha) const override {
+        engine_->cpu_scale(dst, alpha);
+    }
+};
+
+struct CPUAxpyDispatcher final : KernelEngine::AxpyDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUAxpyDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(Tensor& dst, double alpha, const Tensor& src) const override {
+        engine_->cpu_axpy(dst, alpha, src);
+    }
+};
+
 } // namespace (anonymous)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,6 +261,8 @@ CPUKernelEngine::CPUKernelEngine() {
     register_copy        (std::make_unique<CPUCopyDispatcher>        (this));
     register_matmul      (std::make_unique<CPUMatMulDispatcher>      (this));
     register_element_read(std::make_unique<CPUElementReadDispatcher> (this));
+    register_scale       (std::make_unique<CPUScaleDispatcher>       (this));
+    register_axpy        (std::make_unique<CPUAxpyDispatcher>        (this));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -594,6 +612,70 @@ void CPUKernelEngine::cpu_matmul(const Tensor& a, const Tensor& b, Tensor& out) 
                 }
                 res[out_base + i * out_rs + j * out_cs] = acc;
             }
+        }
+    }
+}
+
+// ── In-place scale: dst[i] *= alpha ──────────────────────────────────────────
+//
+// Handles contiguous (fast raw-pointer loop) and strided (odometer) layouts.
+// No use_count assertion — shared buffer visibility is the intent.
+
+void CPUKernelEngine::cpu_scale(Tensor& dst, double alpha) const {
+    const std::size_t n    = dst.numel();
+    const std::size_t ndim = dst.shape().size();
+    double* d = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
+
+    if (dst.is_contiguous()) {
+        for (std::size_t i = 0; i < n; ++i) d[i] *= alpha;
+        return;
+    }
+    // Strided: odometer iteration
+    std::vector<std::size_t> coords(ndim, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t off = 0;
+        for (std::size_t dim = 0; dim < ndim; ++dim) off += coords[dim] * dst.stride()[dim];
+        d[off] *= alpha;
+        for (int dim = static_cast<int>(ndim) - 1; dim >= 0; --dim) {
+            if (++coords[static_cast<std::size_t>(dim)] < dst.shape()[static_cast<std::size_t>(dim)])
+                break;
+            coords[static_cast<std::size_t>(dim)] = 0;
+        }
+    }
+}
+
+// ── In-place axpy: dst[i] += alpha * src[i] ──────────────────────────────────
+//
+// Precondition: dst.shape() == src.shape() (no broadcasting).
+// Both may have arbitrary strides. Fast path when both are contiguous.
+
+void CPUKernelEngine::cpu_axpy(Tensor& dst, double alpha, const Tensor& src) const {
+    assert(dst.shape() == src.shape() &&
+           "cpu_axpy: dst and src must have the same shape");
+    const std::size_t n    = dst.numel();
+    const std::size_t ndim = dst.shape().size();
+
+    if (dst.is_contiguous() && src.is_contiguous()) {
+        double*       d = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
+        const double* s = raw_const <double>(src.buffer())          + src.offset();
+        for (std::size_t i = 0; i < n; ++i) d[i] += alpha * s[i];
+        return;
+    }
+    // Mixed or both strided: independent odometer for each
+    std::vector<std::size_t> coords(ndim, 0);
+    double*       d = raw_mutable<double>(dst.mutable_buffer());
+    const double* s = raw_const <double>(src.buffer());
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t doff = dst.offset(), soff = src.offset();
+        for (std::size_t dim = 0; dim < ndim; ++dim) {
+            doff += coords[dim] * dst.stride()[dim];
+            soff += coords[dim] * src.stride()[dim];
+        }
+        d[doff] += alpha * s[soff];
+        for (int dim = static_cast<int>(ndim) - 1; dim >= 0; --dim) {
+            if (++coords[static_cast<std::size_t>(dim)] < dst.shape()[static_cast<std::size_t>(dim)])
+                break;
+            coords[static_cast<std::size_t>(dim)] = 0;
         }
     }
 }
