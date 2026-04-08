@@ -246,14 +246,16 @@ double CPUKernelEngine::cpu_element_read(const Tensor& t, std::size_t flat_idx) 
     return raw_const<double>(t.buffer())[flat_idx];
 }
 
-// ── Copy (arbitrary → contiguous) ────────────────────────────────────────────
+// ── Copy (arbitrary strides → arbitrary strides) ─────────────────────────────
+//
+// Both src and dst may have any strides. src and dst must have the same shape.
+// Used by Tensor::contiguous() (contiguous dst) and SliceOperation backward
+// (non-contiguous dst — a view into a zeros tensor at the slice position).
 
 void CPUKernelEngine::cpu_copy(const Tensor& src, Tensor& dst) const {
-    // dst is always contiguous (from Tensor::zeros); src may have any strides.
-    assert(dst.is_contiguous());
     assert(src.shape() == dst.shape());
 
-    const double* in  = raw_const<double>(src.buffer())        + src.offset();
+    const double* in  = raw_const<double>(src.buffer())          + src.offset();
     double*       out = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
 
     const std::size_t ndim  = src.shape().size();
@@ -262,9 +264,12 @@ void CPUKernelEngine::cpu_copy(const Tensor& src, Tensor& dst) const {
     // Odometer-style coordinate iteration: last dimension increments fastest.
     std::vector<std::size_t> coords(ndim, 0);
     for (std::size_t flat = 0; flat < numel; ++flat) {
-        std::size_t in_off = 0;
-        for (std::size_t d = 0; d < ndim; ++d) in_off += coords[d] * src.stride()[d];
-        out[flat] = in[in_off];
+        std::size_t in_off = 0, out_off = 0;
+        for (std::size_t d = 0; d < ndim; ++d) {
+            in_off  += coords[d] * src.stride()[d];
+            out_off += coords[d] * dst.stride()[d];
+        }
+        out[out_off] = in[in_off];
 
         for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
             if (++coords[static_cast<std::size_t>(d)] < src.shape()[static_cast<std::size_t>(d)])

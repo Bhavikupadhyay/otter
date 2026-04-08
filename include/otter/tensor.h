@@ -96,6 +96,12 @@ public:
     [[nodiscard]] Tensor view(std::vector<std::size_t> new_shape,
                               std::vector<std::size_t> new_stride) const;
 
+    // Overload with explicit offset — for slice views where the sub-region
+    // starts at a different position than the parent tensor's offset.
+    [[nodiscard]] Tensor view(std::vector<std::size_t> new_shape,
+                              std::vector<std::size_t> new_stride,
+                              std::size_t              new_offset) const;
+
     // Returns a contiguous copy if !is_contiguous(), otherwise *this.
     // Intentionally not differentiable — it is a data normalisation step.
     [[nodiscard]] Tensor contiguous() const;
@@ -119,6 +125,23 @@ public:
     [[nodiscard]] Tensor mul(const Tensor& other) const;
     [[nodiscard]] Tensor matmul(const Tensor& other) const;
     [[nodiscard]] Tensor sum() const;
+
+    // ── View operations (differentiable) ────────────────────────────────────
+    // Each is an Operation subclass so gradients flow through them.
+
+    // Reshape to new_shape without copying data. Input must be contiguous.
+    [[nodiscard]] Tensor reshape(std::vector<std::size_t> new_shape) const;
+
+    // Swap two dimensions. Works on non-contiguous tensors.
+    [[nodiscard]] Tensor transpose(std::size_t dim0, std::size_t dim1) const;
+
+    // Extract length elements starting at start along dim. No data copy.
+    [[nodiscard]] Tensor slice(std::size_t dim,
+                               std::size_t start,
+                               std::size_t length) const;
+
+    // Expand to target_shape using stride-zero semantics. No data copy.
+    [[nodiscard]] Tensor broadcast_to(std::vector<std::size_t> target_shape) const;
 
     // ── Autograd methods ──────────────────────────────────────────────────────
 

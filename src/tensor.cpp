@@ -6,10 +6,14 @@
 #include <unordered_set>
 
 #include "otter/ops/operation.h"
+#include "ops/broadcast_op.h"
 #include "otter/ops/add_operation.h"
 #include "otter/ops/matmul_operation.h"
 #include "otter/ops/mul_operation.h"
+#include "otter/ops/reshape_operation.h"
+#include "otter/ops/slice_operation.h"
 #include "otter/ops/sum_operation.h"
+#include "otter/ops/transpose_operation.h"
 
 namespace otter {
 
@@ -85,6 +89,18 @@ Tensor Tensor::view(std::vector<std::size_t> new_shape,
            "Tensor::view(): shape and stride must have the same number of dimensions");
     return Tensor(buffer_, std::move(new_shape), std::move(new_stride),
                   offset_, dtype_, backend_);
+}
+
+Tensor Tensor::view(std::vector<std::size_t> new_shape,
+                    std::vector<std::size_t> new_stride,
+                    std::size_t              new_offset) const
+{
+    if (!defined())
+        throw std::runtime_error("Tensor::view() called on undefined tensor");
+    assert(new_shape.size() == new_stride.size() &&
+           "Tensor::view(): shape and stride must have the same number of dimensions");
+    return Tensor(buffer_, std::move(new_shape), std::move(new_stride),
+                  new_offset, dtype_, backend_);
 }
 
 Tensor Tensor::contiguous() const {
@@ -182,6 +198,22 @@ Tensor Tensor::mul(const Tensor& other) const {
 
 Tensor Tensor::matmul(const Tensor& other) const {
     return std::make_shared<MatMulOperation>()->execute({*this, other})[0];
+}
+
+Tensor Tensor::reshape(std::vector<std::size_t> new_shape) const {
+    return std::make_shared<ReshapeOperation>(std::move(new_shape))->execute({*this})[0];
+}
+
+Tensor Tensor::transpose(std::size_t dim0, std::size_t dim1) const {
+    return std::make_shared<TransposeOperation>(dim0, dim1)->execute({*this})[0];
+}
+
+Tensor Tensor::slice(std::size_t dim, std::size_t start, std::size_t length) const {
+    return std::make_shared<SliceOperation>(dim, start, length)->execute({*this})[0];
+}
+
+Tensor Tensor::broadcast_to(std::vector<std::size_t> target_shape) const {
+    return std::make_shared<BroadcastOp>(std::move(target_shape))->execute({*this})[0];
 }
 
 Tensor Tensor::sum() const {

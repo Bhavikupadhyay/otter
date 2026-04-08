@@ -7,6 +7,7 @@ add_executable(otter_tests
     test_autograd.cpp
     test_broadcast.cpp
     test_matmul.cpp
+    test_views.cpp
 )
 
 target_link_libraries(otter_tests PRIVATE otter_core)

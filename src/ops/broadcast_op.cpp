@@ -1,6 +1,7 @@
 #include "broadcast_op.h"
 
 #include <cassert>
+#include <stdexcept>
 
 #include "otter/detail/broadcast.h"
 #include "otter/kernel/kernel_engine.h"
@@ -9,7 +10,13 @@ namespace otter {
 
 std::vector<Tensor> BroadcastOp::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "BroadcastOp: takes exactly one input");
-    assert(inputs[0].defined() && "BroadcastOp: input is undefined");
+    if (!inputs[0].defined())
+        throw std::runtime_error("BroadcastOp: input is undefined");
+
+    // Validate compatibility via broadcast_shape (throws runtime_error on
+    // incompatible shapes). broadcast_strides asserts compatibility, so
+    // this check must come first to give a clean error instead of a crash.
+    detail::broadcast_shape(inputs[0].shape(), target_shape_);
 
     const auto new_strides = detail::broadcast_strides(
         inputs[0].shape(), inputs[0].stride(), target_shape_);
