@@ -4,6 +4,8 @@ add_executable(otter_tests
     test_kernel.cpp
     test_cpu_kernels.cpp
     test_tensor.cpp
+    test_autograd.cpp
+    test_broadcast.cpp
 )
 
 target_link_libraries(otter_tests PRIVATE otter_core)

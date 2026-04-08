@@ -111,6 +111,13 @@ public:
     // tensors from zeros(). Not safe on views or copies. Not differentiable.
     void fill_(double value);
 
+    // ── Operations ───────────────────────────────────────────────────────────
+    // Each creates the corresponding Operation and calls execute().
+    // mul() and matmul() are added in steps 4 and 5 respectively.
+
+    [[nodiscard]] Tensor add(const Tensor& other) const;
+    [[nodiscard]] Tensor sum() const;
+
     // ── Autograd methods ──────────────────────────────────────────────────────
 
     // Returns the accumulated gradient tensor.

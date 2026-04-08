@@ -5,6 +5,10 @@
 #include <stdexcept>
 #include <unordered_set>
 
+#include "otter/ops/operation.h"
+#include "otter/ops/add_operation.h"
+#include "otter/ops/sum_operation.h"
+
 namespace otter {
 
 // ── Private constructor ───────────────────────────────────────────────────────
@@ -151,34 +155,116 @@ void Tensor::zero_grad() noexcept {
 }
 
 void Tensor::accumulate_grad(const Tensor& incoming) const {
-    // Full implementation deferred to step 3 (requires Tensor::add()).
-    // This body is here so the linker is satisfied if called.
-    (void)incoming;
-    throw std::logic_error(
-        "Tensor::accumulate_grad: not yet implemented (requires add() from step 3)");
+    assert(requires_grad_ && "accumulate_grad called on tensor that does not require grad");
+    if (!grad_accum_) grad_accum_ = std::make_shared<GradAccumulator>();
+    if (!grad_accum_->grad_tensor.defined()) {
+        grad_accum_->grad_tensor = Tensor::zeros(shape_, *backend_, dtype_);
+    }
+    assert(incoming.shape() == shape_ &&
+           "accumulate_grad: incoming gradient shape does not match tensor shape");
+    // detach() prevents a second-order grad graph through the accumulation add().
+    // Without it, add() would wire a new AddOperation whose saved_inputs_ holds
+    // references back into the grad chain, creating reference cycles.
+    grad_accum_->grad_tensor = grad_accum_->grad_tensor.add(incoming.detach());
 }
 
-// ── Topological DFS (static, has access to private autograd fields) ───────────
-// Full implementation deferred to step 3 when Operation is complete.
+// ── Tensor::add / sum (wired here; mul/matmul added in later steps) ───────────
+
+Tensor Tensor::add(const Tensor& other) const {
+    return std::make_shared<AddOperation>()->execute({*this, other})[0];
+}
+
+Tensor Tensor::sum() const {
+    return std::make_shared<SumOperation>()->execute({*this})[0];
+}
+
+// ── Topological DFS (static — accesses private autograd fields) ───────────────
 
 void Tensor::topo_dfs(const Tensor&                   t,
                       std::unordered_set<Operation*>& visited,
                       std::vector<Tensor>&             order)
 {
-    (void)t; (void)visited; (void)order;
-    // Implemented in step 3.
+    // Stop at leaves (user-created tensors) and at nodes whose grad_op_ was
+    // cleared by a previous backward pass. is_leaf_ distinguishes the two states:
+    // "true leaf" vs "computed tensor after cleanup" (both have grad_op_==nullptr).
+    if (t.is_leaf_ || !t.grad_op_) return;
+    Operation* op = t.grad_op_.get();
+    if (visited.count(op)) return;
+    visited.insert(op);
+    for (const Tensor& inp : t.grad_op_->inputs())
+        topo_dfs(inp, visited, order);
+    order.push_back(t);  // post-order: children before parents
 }
 
+// ── Tensor::backward ──────────────────────────────────────────────────────────
+
 void Tensor::backward(bool retain_graph) {
-    // Implemented in step 3.
-    (void)retain_graph;
-    throw std::logic_error("Tensor::backward: not yet implemented (step 3)");
+    if (!defined())
+        throw std::runtime_error("backward: called on undefined Tensor");
+    if (is_leaf_)
+        throw std::runtime_error(
+            "backward: called on a leaf Tensor — call backward on a computed result");
+    if (!grad_op_)
+        throw std::runtime_error(
+            "backward: grad_op_ is null — graph was already cleared. "
+            "Use retain_graph=true to call backward twice.");
+    // Seed: ones of the same shape (correct for scalar loss and any shape).
+    Tensor seed = Tensor::zeros(shape_, *backend_, dtype_);
+    seed.fill_(1.0);
+    backward(std::move(seed), retain_graph);
 }
 
 void Tensor::backward(Tensor seed, bool retain_graph) {
-    // Implemented in step 3.
-    (void)seed; (void)retain_graph;
-    throw std::logic_error("Tensor::backward(seed): not yet implemented (step 3)");
+    if (!defined())
+        throw std::runtime_error("backward: called on undefined Tensor");
+
+    // ── 1. Build topological order (DFS post-order → reverse = loss first) ───
+    std::vector<Tensor>            order;
+    std::unordered_set<Operation*> visited;
+    topo_dfs(*this, visited, order);
+    std::reverse(order.begin(), order.end());
+
+    // ── 2. Clear intermediate (non-leaf) gradients ────────────────────────────
+    // On a second backward call (retain_graph=true first), intermediate nodes
+    // still hold gradients from the previous pass. Clear them so each backward
+    // starts fresh for intermediates. Leaf gradients are NOT cleared here —
+    // they accumulate across multiple backward calls (the expected behaviour).
+    for (const Tensor& node : order) {
+        if (!node.is_leaf_ && node.grad_accum_)
+            node.grad_accum_->grad_tensor = Tensor{};
+    }
+
+    // ── 3. Seed this tensor's gradient ───────────────────────────────────────
+    // Assign (not accumulate) the seed. After clearing intermediates above,
+    // this tensor's grad_accum_ is empty; assigning directly is equivalent
+    // to a fresh start for this node's gradient.
+    if (!grad_accum_) grad_accum_ = std::make_shared<GradAccumulator>();
+    grad_accum_->grad_tensor = std::move(seed);
+
+    // ── 4. Traverse in reverse topo order ─────────────────────────────────────
+    for (const Tensor& node : order) {
+        if (!node.grad_op_) continue;
+        if (!node.grad_accum_ || !node.grad_accum_->grad_tensor.defined()) continue;
+
+        const Tensor& node_grad = node.grad_accum_->grad_tensor;
+
+        // Run the operation's backward pass.
+        auto input_grads = node.grad_op_->backward({node_grad});
+
+        // Accumulate each input gradient into the corresponding saved input.
+        const auto& saved = node.grad_op_->inputs();
+        for (std::size_t i = 0; i < saved.size() && i < input_grads.size(); ++i) {
+            if (saved[i].requires_grad() && input_grads[i].defined())
+                saved[i].accumulate_grad(input_grads[i]);
+        }
+
+        // ── 4. Graph cleanup (unless retain_graph) ────────────────────────────
+        if (!retain_graph) node.grad_op_->clear_saved();
+    }
+
+    // Null out this node's grad_op_ after cleanup so a second backward() throws
+    // rather than silently double-counting gradients.
+    if (!retain_graph) grad_op_ = nullptr;
 }
 
 } // namespace otter
