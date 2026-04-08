@@ -1,7 +1,9 @@
 #include "otter/tensor.h"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace otter {
 
@@ -26,14 +28,20 @@ Tensor::Tensor(std::shared_ptr<Buffer>  buf,
 
 Tensor Tensor::zeros(const std::vector<std::size_t>& shape,
                      Backend& backend,
-                     DType dtype)
+                     DType dtype,
+                     bool  requires_grad)
 {
     std::size_t nbytes = dtype_utils::size_of(dtype);
     for (auto d : shape) nbytes *= d;
 
     auto strides = detail::contiguous_strides(shape);
     auto buf     = std::make_shared<Buffer>(nbytes, backend);  // zero-initialised by Buffer ctor
-    return Tensor(std::move(buf), shape, std::move(strides), 0, dtype, &backend);
+    Tensor t(std::move(buf), shape, std::move(strides), 0, dtype, &backend);
+    if (requires_grad) {
+        t.requires_grad_ = true;
+        t.grad_accum_    = std::make_shared<GradAccumulator>();
+    }
+    return t;
 }
 
 // ── Accessors ─────────────────────────────────────────────────────────────────
@@ -119,6 +127,58 @@ void Tensor::fill_(double value) {
            "Tensor::fill_() requires unique buffer ownership — "
            "do not call fill_() on views or copies sharing the same buffer");
     backend_->kernel_engine()->dispatch_fill(*this, value);
+}
+
+// ── Autograd methods ──────────────────────────────────────────────────────────
+
+Tensor Tensor::grad() const noexcept {
+    if (!grad_accum_) return Tensor{};
+    return grad_accum_->grad_tensor;
+}
+
+Tensor Tensor::detach() const noexcept {
+    Tensor t         = *this;   // shallow copy: shares Buffer, shape, stride, dtype, backend
+    t.requires_grad_ = false;
+    t.grad_accum_    = nullptr;
+    t.grad_op_       = nullptr;
+    // is_leaf_ intentionally NOT changed: detach does not make a computed tensor a leaf.
+    // is_leaf_ is strictly "did the user create this tensor directly via zeros/from_data".
+    return t;
+}
+
+void Tensor::zero_grad() noexcept {
+    if (grad_accum_) grad_accum_->grad_tensor = Tensor{};
+}
+
+void Tensor::accumulate_grad(const Tensor& incoming) const {
+    // Full implementation deferred to step 3 (requires Tensor::add()).
+    // This body is here so the linker is satisfied if called.
+    (void)incoming;
+    throw std::logic_error(
+        "Tensor::accumulate_grad: not yet implemented (requires add() from step 3)");
+}
+
+// ── Topological DFS (static, has access to private autograd fields) ───────────
+// Full implementation deferred to step 3 when Operation is complete.
+
+void Tensor::topo_dfs(const Tensor&                   t,
+                      std::unordered_set<Operation*>& visited,
+                      std::vector<Tensor>&             order)
+{
+    (void)t; (void)visited; (void)order;
+    // Implemented in step 3.
+}
+
+void Tensor::backward(bool retain_graph) {
+    // Implemented in step 3.
+    (void)retain_graph;
+    throw std::logic_error("Tensor::backward: not yet implemented (step 3)");
+}
+
+void Tensor::backward(Tensor seed, bool retain_graph) {
+    // Implemented in step 3.
+    (void)seed; (void)retain_graph;
+    throw std::logic_error("Tensor::backward(seed): not yet implemented (step 3)");
 }
 
 } // namespace otter

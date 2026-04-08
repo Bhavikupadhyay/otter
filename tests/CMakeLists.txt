@@ -3,6 +3,7 @@ add_executable(otter_tests
     test_memory.cpp
     test_kernel.cpp
     test_cpu_kernels.cpp
+    test_tensor.cpp
 )
 
 target_link_libraries(otter_tests PRIVATE otter_core)
