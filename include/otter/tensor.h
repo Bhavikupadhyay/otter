@@ -5,6 +5,8 @@
 #include <initializer_list>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -36,20 +38,45 @@ public:
 
     // Allocates a zero-initialised contiguous tensor via backend.
     // requires_grad=true: tensor participates in backward(); grad_accum_ is allocated.
-    static Tensor zeros(const std::vector<std::size_t>& shape,
-                        Backend& backend,
-                        DType dtype       = DType::Float64,
-                        bool  requires_grad = false);
+    [[nodiscard]] static Tensor zeros(const std::vector<std::size_t>& shape,
+                                      Backend& backend,
+                                      DType dtype         = DType::Float64,
+                                      bool  requires_grad = false);
     static Tensor zeros(const std::vector<std::size_t>&, Backend&&,
                         DType = DType::Float64, bool = false) = delete;  // Backend must outlive Tensor
+
+    // Allocates a ones-initialised contiguous tensor via backend.
+    [[nodiscard]] static Tensor ones(const std::vector<std::size_t>& shape,
+                                     Backend& backend,
+                                     DType dtype         = DType::Float64,
+                                     bool  requires_grad = false);
+    static Tensor ones(const std::vector<std::size_t>&, Backend&&,
+                       DType = DType::Float64, bool = false) = delete;
+
+    // Allocates a tensor filled with a constant value.
+    [[nodiscard]] static Tensor full(const std::vector<std::size_t>& shape,
+                                     double value,
+                                     Backend& backend,
+                                     DType dtype         = DType::Float64,
+                                     bool  requires_grad = false);
+    static Tensor full(const std::vector<std::size_t>&, double, Backend&&,
+                       DType = DType::Float64, bool = false) = delete;
+
+    // Allocates a zero-initialised tensor with the same shape, dtype, and backend as t.
+    [[nodiscard]] static Tensor zeros_like(const Tensor& t,
+                                           bool requires_grad = false);
+
+    // Allocates a ones-initialised tensor with the same shape, dtype, and backend as t.
+    [[nodiscard]] static Tensor ones_like(const Tensor& t,
+                                          bool requires_grad = false);
 
     // Copies data into a fresh contiguous tensor.
     // T must have a dtype_utils::dtype_of<T> specialisation (currently double).
     template<typename T>
-    static Tensor from_data(const std::vector<T>&        data,
-                            const std::vector<std::size_t>& shape,
-                            Backend& backend,
-                            bool     requires_grad = false);
+    [[nodiscard]] static Tensor from_data(const std::vector<T>&        data,
+                                          const std::vector<std::size_t>& shape,
+                                          Backend& backend,
+                                          bool     requires_grad = false);
     template<typename T>
     static Tensor from_data(const std::vector<T>&,
                             const std::vector<std::size_t>&,
@@ -110,6 +137,17 @@ public:
     // Uses dispatch_element_read — makes device→host transfer explicit.
     // On a CUDA backend this becomes a kernel launch; never a silent host deref.
     [[nodiscard]] double at(std::initializer_list<std::size_t> indices) const;
+
+    // ── Data extraction ──────────────────────────────────────────────────────
+    // Returns all elements in logical row-major order as a host-side vector.
+    // T must be double (Float64) or float (Float32). Handles arbitrary strides.
+    // O(n) device→host transfers via dispatch_element_read — diagnostic use only.
+    template<typename T>
+    [[nodiscard]] std::vector<T> to_vector() const;
+
+    // ── Debug output ──────────────────────────────────────────────────────────
+    // Prints shape, dtype, and values to stdout. label is optional.
+    void print(const std::string& label = "") const;
 
     // ── In-place fill ────────────────────────────────────────────────────────
     // Writes value to every element. Requires: (1) contiguous, (2) uniquely
@@ -268,6 +306,44 @@ Tensor Tensor::from_data(const std::vector<T>&           data,
         t.grad_accum_    = std::make_shared<GradAccumulator>();
     }
     return t;
+}
+
+// =============================================================================
+// ── to_vector template body ───────────────────────────────────────────────────
+// Defined here because it is a template — all callers must see the body.
+// Iterates logical row-major coordinates, maps to physical flat index using
+// offset_ + coords·stride_, and reads each element via dispatch_element_read.
+// =============================================================================
+
+template<typename T>
+std::vector<T> Tensor::to_vector() const {
+    static_assert(std::is_same_v<T, double> || std::is_same_v<T, float>,
+                  "to_vector: T must be double or float");
+    if (!defined())
+        throw std::runtime_error("to_vector: tensor is undefined");
+
+    const std::size_t n    = numel();
+    const std::size_t ndim = shape_.size();
+    std::vector<T> result;
+    result.reserve(n);
+
+    // Odometer-style iteration over logical coordinates in row-major order.
+    // Maps coords → physical flat index using offset_ + coords·stride_.
+    std::vector<std::size_t> coords(ndim, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t flat = offset_;
+        for (std::size_t d = 0; d < ndim; ++d)
+            flat += coords[d] * stride_[d];
+        result.push_back(static_cast<T>(
+            backend_->kernel_engine()->dispatch_element_read(*this, flat)));
+
+        for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
+            const auto ud = static_cast<std::size_t>(d);
+            if (++coords[ud] < shape_[ud]) break;
+            coords[ud] = 0;
+        }
+    }
+    return result;
 }
 
 } // namespace otter

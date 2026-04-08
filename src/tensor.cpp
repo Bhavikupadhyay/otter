@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <iostream>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 #include "otter/ops/operation.h"
@@ -59,6 +63,35 @@ Tensor Tensor::zeros(const std::vector<std::size_t>& shape,
         t.grad_accum_    = std::make_shared<GradAccumulator>();
     }
     return t;
+}
+
+Tensor Tensor::ones(const std::vector<std::size_t>& shape,
+                    Backend& backend,
+                    DType dtype,
+                    bool  requires_grad)
+{
+    Tensor t = zeros(shape, backend, dtype, requires_grad);
+    t.fill_(1.0);
+    return t;
+}
+
+Tensor Tensor::full(const std::vector<std::size_t>& shape,
+                    double value,
+                    Backend& backend,
+                    DType dtype,
+                    bool  requires_grad)
+{
+    Tensor t = zeros(shape, backend, dtype, requires_grad);
+    t.fill_(value);
+    return t;
+}
+
+Tensor Tensor::zeros_like(const Tensor& t, bool requires_grad) {
+    return zeros(t.shape(), t.backend(), t.dtype(), requires_grad);
+}
+
+Tensor Tensor::ones_like(const Tensor& t, bool requires_grad) {
+    return ones(t.shape(), t.backend(), t.dtype(), requires_grad);
 }
 
 // ── Accessors ─────────────────────────────────────────────────────────────────
@@ -253,6 +286,67 @@ Tensor Tensor::broadcast_to(std::vector<std::size_t> target_shape) const {
 
 Tensor Tensor::sum() const {
     return std::make_shared<SumOperation>()->execute({*this})[0];
+}
+
+// ── Debug output ──────────────────────────────────────────────────────────────
+
+void Tensor::print(const std::string& label) const {
+    if (!label.empty())
+        std::cout << label << "\n";
+
+    if (!defined()) {
+        std::cout << "<undefined tensor>\n";
+        return;
+    }
+
+    // Shape
+    std::cout << "shape: [";
+    for (std::size_t i = 0; i < shape_.size(); ++i) {
+        if (i) std::cout << ", ";
+        std::cout << shape_[i];
+    }
+    std::cout << "]";
+
+    // DType
+    std::cout << "  dtype: ";
+    switch (dtype_) {
+        case DType::Float64: std::cout << "Float64"; break;
+        default:             std::cout << "unknown"; break;
+    }
+    std::cout << "\n";
+
+    // Values — row-major iteration via the same offset+stride logic as to_vector.
+    const std::size_t n    = numel();
+    const std::size_t ndim = shape_.size();
+    std::vector<std::size_t> coords(ndim, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        // Print opening brackets for each new outermost run
+        if (ndim > 1) {
+            for (std::size_t d = 0; d < ndim - 1; ++d) {
+                if (coords[d] == 0) std::cout << "[";
+            }
+        }
+
+        std::size_t flat = offset_;
+        for (std::size_t d = 0; d < ndim; ++d) flat += coords[d] * stride_[d];
+        std::cout << backend_->kernel_engine()->dispatch_element_read(*this, flat);
+
+        // Increment odometer and print closing brackets / separators
+        bool carried = false;
+        for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
+            const auto ud = static_cast<std::size_t>(d);
+            if (++coords[ud] < shape_[ud]) break;
+            coords[ud] = 0;
+            carried = true;
+            if (d > 0) std::cout << "]";
+        }
+        if (i < n - 1) {
+            if (carried && ndim > 1) std::cout << ",\n ";
+            else                     std::cout << ", ";
+        }
+    }
+    if (ndim > 1) std::cout << "]";
+    std::cout << "\n";
 }
 
 // ── Topological DFS (static — accesses private autograd fields) ───────────────
