@@ -85,8 +85,9 @@ public:
     [[nodiscard]] double at(std::initializer_list<std::size_t> indices) const;
 
     // ── In-place fill ────────────────────────────────────────────────────────
-    // Writes value to every element. Asserts is_contiguous (always true for
-    // freshly allocated tensors from zeros()). Not differentiable.
+    // Writes value to every element. Requires: (1) contiguous, (2) uniquely
+    // owned buffer (use_count == 1). Both conditions hold for freshly allocated
+    // tensors from zeros(). Not safe on views or copies. Not differentiable.
     void fill_(double value);
 
 private:

@@ -58,6 +58,7 @@ std::byte* CPUMemoryManager::allocate(std::size_t bytes, std::size_t alignment) 
         Rec rec{ptr, ptr, bytes, bytes, alignment, /*is_small=*/true};
         active_.emplace(ptr, rec);
         bytes_allocated_ += bytes;
+        bytes_reserved_  += bytes;  // small allocs count toward reserved too
         return ptr;
     }
 
@@ -118,6 +119,7 @@ void CPUMemoryManager::free(std::byte* ptr) noexcept {
     bytes_allocated_ -= rec.requested_bytes;
 
     if (rec.is_small) {
+        bytes_reserved_ -= rec.requested_bytes;
         ::free(rec.base_ptr);
     } else {
         free_pool_.emplace(rec.mapped_size, rec);

@@ -197,17 +197,17 @@ void test_buffer_init_data_copied() {
 // ── Test 11 ──────────────────────────────────────────────────────────────────
 
 void test_buffer_small_path_frees_immediately() {
-    std::cout << "[Test 11] small Buffer (< 1 MB) does not grow bytes_reserved\n";
+    std::cout << "[Test 11] small Buffer (< 1 MB) tracks bytes_reserved; invariant holds\n";
     auto backend = make_test_backend();
-    const std::size_t reserved_before = backend->memory_manager()->bytes_reserved();
     {
-        Buffer buf(256, *backend); // 256 bytes — small path
+        Buffer buf(256, *backend); // 256 bytes — small path (posix_memalign)
         CHECK(backend->memory_manager()->bytes_allocated() == 256);
-        // Small path never touches the mmap pool
-        CHECK(backend->memory_manager()->bytes_reserved() == reserved_before);
+        // Small allocs count toward bytes_reserved so the invariant holds
+        CHECK(backend->memory_manager()->bytes_reserved() >= backend->memory_manager()->bytes_allocated());
+        CHECK(backend->memory_manager()->bytes_reserved() == 256);
     }
     CHECK(backend->memory_manager()->bytes_allocated() == 0);
-    CHECK(backend->memory_manager()->bytes_reserved()  == reserved_before);
+    CHECK(backend->memory_manager()->bytes_reserved()  == 0);
 }
 
 // ── Test 12 ──────────────────────────────────────────────────────────────────
@@ -231,22 +231,20 @@ void test_allocator_reserved_invariant_holds() {
 }
 
 // ── Test 13 ──────────────────────────────────────────────────────────────────
-// BUG 5 documentation: bytes_reserved < bytes_allocated when only small allocs
-// exist. This test documents the known behaviour gap — see cpu_memory_manager.h
-// for the explanation. bytes_reserved tracks mmap segments only.
+// bytes_reserved >= bytes_allocated invariant holds for small allocs.
+// Small allocs (posix_memalign) now count toward bytes_reserved_ so the
+// invariant is unconditional across both allocation paths.
 
-void test_allocator_small_alloc_reserved_below_allocated() {
-    std::cout << "[Test 13] bytes_reserved < bytes_allocated is possible with small allocs only\n";
+void test_allocator_invariant_holds_for_small_allocs() {
+    std::cout << "[Test 13] bytes_reserved >= bytes_allocated holds for small allocs\n";
     CPUMemoryManager mm;
-    // 256 bytes — well below the 1 MB small-alloc threshold (posix_memalign path)
-    std::byte* ptr = mm.allocate(256);
-    // bytes_allocated must reflect the live allocation
-    CHECK(mm.bytes_allocated() == 256);
-    // bytes_reserved does NOT include small allocations (they are not mmap'd)
-    CHECK(mm.bytes_reserved() == 0);
-    // This means bytes_reserved < bytes_allocated — document this explicitly
-    CHECK(mm.bytes_reserved() < mm.bytes_allocated());
-    mm.free(ptr);
+    std::byte* a = mm.allocate(256);
+    std::byte* b = mm.allocate(512);
+    CHECK(mm.bytes_allocated() == 768);
+    CHECK(mm.bytes_reserved()  >= mm.bytes_allocated());
+    mm.free(a);
+    CHECK(mm.bytes_reserved()  >= mm.bytes_allocated());
+    mm.free(b);
     CHECK(mm.bytes_allocated() == 0);
     CHECK(mm.bytes_reserved()  == 0);
 }
@@ -266,7 +264,7 @@ void run_memory_tests() {
     test_buffer_init_data_copied();
     test_buffer_small_path_frees_immediately();
     test_allocator_reserved_invariant_holds();
-    test_allocator_small_alloc_reserved_below_allocated();
+    test_allocator_invariant_holds_for_small_allocs();
 }
 
 } // namespace otter::test

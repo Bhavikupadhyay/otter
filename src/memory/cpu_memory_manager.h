@@ -30,13 +30,11 @@ namespace otter {
 // is well-defined provided the alignment contract is met (enforced by the
 // alignment parameter, defaulting to 64 bytes).
 //
-// bytes_allocated() tracks live user bytes (both small and large paths).
-// bytes_reserved()  tracks mmap'd pages only (large path; live + cached pool).
-//   NOTE: bytes_reserved() < bytes_allocated() is possible when small
-//   allocations (< kSmallAllocThreshold) are live, because posix_memalign
-//   allocations are NOT counted in bytes_reserved_. The invariant
-//   "bytes_reserved >= bytes_allocated" only holds in an all-large-alloc
-//   scenario. See TODO: resolve this in the MemoryManager interface contract.
+// bytes_allocated() tracks live user bytes (both paths).
+// bytes_reserved()  tracks all OS-backed memory this allocator controls:
+//   - large path: mmap'd pages (live + cached pool)
+//   - small path: posix_memalign'd bytes (live only; not pooled)
+//   Invariant: bytes_reserved() >= bytes_allocated() always holds.
 // release_cache()   munmaps all free_pool_ segments; allocator stays functional.
 class CPUMemoryManager final : public MemoryManager {
 public:

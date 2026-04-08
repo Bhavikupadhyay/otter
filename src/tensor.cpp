@@ -114,7 +114,10 @@ double Tensor::at(std::initializer_list<std::size_t> indices) const {
 void Tensor::fill_(double value) {
     if (!defined())
         throw std::runtime_error("Tensor::fill_() called on undefined tensor");
-    assert(is_contiguous_    && "Tensor::fill_() requires a contiguous tensor");
+    assert(is_contiguous_ && "Tensor::fill_() requires a contiguous tensor");
+    assert(buffer_.use_count() == 1 &&
+           "Tensor::fill_() requires unique buffer ownership — "
+           "do not call fill_() on views or copies sharing the same buffer");
     backend_->kernel_engine()->dispatch_fill(*this, value);
 }
 
