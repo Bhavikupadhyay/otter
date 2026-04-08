@@ -1,64 +1,124 @@
-# OTTER
+# Otter
 
-OTTER is a C++ autodiff library with an eager execution forward model and a modular multi-backend architecture. Tensor semantics, kernel dispatch, and memory management are independent layers; a new backend requires no changes to core abstractions. Backends are pre-built singletons; `cpu_backend()` returns the CPU backend and tensors bind to a backend at creation time.
+Otter is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, runs on a pluggable multi-backend kernel layer, and installs as a CMake static library. Otter currently supports float64 on CPU.
 
 ```cpp
 #include "otter/tensor.h"
 #include "otter/backends/cpu.h"
+#include "otter/optim/sgd.h"
 
-Backend& be = otter::cpu_backend();
+otter::Backend& be = otter::cpu_backend();
 
-otter::Tensor a = otter::Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, be);
-otter::Tensor b = otter::Tensor::zeros({2,3}, be);
+// Dataset
+otter::Tensor x = otter::Tensor::from_data<double>({0.1,0.2, 0.3,0.4, 0.5,0.6, 0.7,0.8}, {4,2}, be);
+otter::Tensor y = otter::Tensor::from_data<double>({0.3, 0.7, 1.1, 1.5}, {4,1}, be);
 
-be.kernel_engine()->dispatch_binary(otter::KernelType::Add, a, a, b);
-double val = b.at({1, 2});  // 12.0
+// Weights
+otter::Tensor W1 = otter::Tensor::zeros({2,4}, be, otter::DType::Float64, /*requires_grad=*/true);
+otter::Tensor b1 = otter::Tensor::zeros({4},   be, otter::DType::Float64, /*requires_grad=*/true);
+otter::Tensor W2 = otter::Tensor::zeros({4,1}, be, otter::DType::Float64, /*requires_grad=*/true);
+otter::Tensor b2 = otter::Tensor::zeros({1},   be, otter::DType::Float64, /*requires_grad=*/true);
 
-// Non-contiguous view; contiguous() materialises to a fresh buffer
-otter::Tensor t = a.view({3, 2}, {1, 3});
-otter::Tensor c = t.contiguous();
+otter::optim::SGD sgd({W1, b1, W2, b2}, /*lr=*/0.01);
+
+for (int step = 0; step < 100; ++step) {
+    sgd.zero_grad();
+
+    otter::Tensor h   = x.matmul(W1).add(b1.broadcast_to({4,4})).relu();
+    otter::Tensor out = h.matmul(W2).add(b2.broadcast_to({4,1}));
+    otter::Tensor mse = out.sub(y).mul(out.sub(y)).mean();
+
+    mse.backward();
+    sgd.step();
+}
 ```
 
+The forward pass traces a computation graph. `.backward()` traverses it in reverse topological order and accumulates `∂loss/∂param` into every leaf tensor marked `requires_grad=true`. The graph is freed after each pass unless `retain_graph=true` is set.
+
+---
+
+## Tensor ops
+
+```
+Binary:           add  sub  mul  div
+Unary:            neg  exp  log  sqrt  relu
+Matmul:           matmul  (batched; batch dims accept stride-0 broadcast views)
+Reductions:       sum  mean
+Views (diffable): reshape  transpose  slice  broadcast_to
+Layout:           view  contiguous
+```
+
+All binary, unary, matmul, and reduction ops participate in the graph. View ops wire a backward node that routes gradients back through the layout change. `view`, `contiguous`, and `fill_` are not differentiable.
+
+---
+
+## Autograd
+
+```cpp
+otter::Tensor a = otter::Tensor::from_data<double>({1.0, 2.0, 3.0}, {3}, be,
+                                                   /*requires_grad=*/true);
+otter::Tensor loss = a.mul(a).sum();   // loss = Σaᵢ²
+loss.backward();
+// a.grad() == [2.0, 4.0, 6.0]   (∂loss/∂aᵢ = 2aᵢ)
+```
+
+- `retain_graph=true` keeps the graph intact for a second backward call
+- `detach()` returns a shallow copy with no grad history; the buffer is shared
+- `NoGradGuard` disables graph construction — used internally by all backward passes and optimizer steps
+- Gradients accumulate across `backward()` calls; call `zero_grad()` to reset before the next pass
+
+---
+
+## Optimizer
+
+SGD with optional momentum and weight decay:
+
+```cpp
+// Basic
+otter::optim::SGD sgd({W, b}, /*lr=*/0.01);
+
+// With momentum
+otter::optim::SGD sgd({W, b}, /*lr=*/0.01, /*momentum=*/0.9);
+
+// With weight decay
+otter::optim::SGD sgd({W, b}, /*lr=*/0.01, /*momentum=*/0.0, /*weight_decay=*/1e-4);
+```
+
+Parameters are passed by value. The optimizer shares the same `Buffer` as the caller's tensors — `step()` updates are visible through the original handles immediately. `set_lr(double)` adjusts the learning rate between steps.
+
+---
 
 ## Architecture
 
-`Backend` represents a device instance (e.g., CPU). It owns a `MemoryManager` and a `KernelEngine`. `Tensor` stores a non-owning `Backend*`; device identity is pointer identity (two tensors are on the same device iff their backend pointers are equal). Backend singletons handle their own construction; `cpu_backend()` returns the same `Backend&` on every call.
+`Tensor` is a value type. Copies share one `Buffer` via `shared_ptr` with independent shape, stride, and offset metadata. Views are zero-copy; `contiguous()` copies only when the strides are non-standard.
 
-`KernelEngine` is a registry. Each op family registers a typed `Dispatcher` struct. Adding a new kernel adds a dispatcher and a `KernelType` entry; the registry interface is unchanged. Dispatch is non-virtual at the engine level. Polymorphism lives only inside the `Dispatcher` structs.
+`Backend` owns a `MemoryManager` and a `KernelEngine`. `cpu_backend()` is a program-lifetime singleton. Tensors bind to a backend at creation and hold a non-owning pointer; two tensors are on the same device iff their backend pointers are equal.
 
-`Tensor` is a value type. Multiple tensors share one `Buffer` via `shared_ptr` with independent shape, stride, and offset metadata. `view()` returns a new `Tensor` over the same allocation with no copy. No data moves until `contiguous()` is explicitly called.
+`KernelEngine` is a dispatcher registry. Each op family registers a typed `Dispatcher` struct in the backend constructor. Adding a kernel means adding a dispatcher and a `KernelType` entry; the registry interface does not change. Unary and binary dispatch go through the `KernelType` map. Parameterized in-place ops (`dispatch_fill`, `dispatch_scale`, `dispatch_axpy`) are direct virtual calls with scalar parameters.
 
-`Buffer::data()` requires `Passkey<KernelEngine>`. Only `KernelEngine` subclasses can construct the passkey, so raw-pointer access is structurally restricted to the kernel layer. Every raw-pointer site is auditable with `grep Passkey<KernelEngine>`.
+`Buffer::data()` requires `Passkey<KernelEngine>`. Only `KernelEngine` subclasses can construct the passkey. Every raw-pointer access site is auditable with `grep Passkey<KernelEngine>`.
 
+`Operation::execute()` owns all graph wiring. `forward()` and `backward()` are pure compute. Leaf tensors get `grad_accum_` at creation; computed tensors get `grad_op_` set by `execute()` and nulled after backward unless `retain_graph=true`.
 
-## CPU backend
+---
 
-`CPUKernelEngine` registers a dispatcher per op family (unary, binary, matmul, etc.). Each stores a `CPUKernelEngine*` and forwards to a `cpu_*` method on the engine, which calls the protected `raw_const`/`raw_mutable` helpers. The Passkey invariant holds without giving dispatcher structs direct buffer access.
+## Debug utilities
 
+`include/otter/debug.h` provides header-only utilities over the public Tensor API:
 
-## Tensor API
+```cpp
+#include "otter/debug.h"
 
-- `Tensor::zeros(shape, backend)` — allocates and zero-initialises a tensor
-- `Tensor::from_data<double>(data, shape, backend)` — copies data into a new contiguous tensor
-- `at({i, j, ...})` — bounds-checked scalar read; throws `std::out_of_range` on bad index in all builds
-- `view(shape, stride)` — layout alias over the same buffer
-- `contiguous()` — returns `*this` if already contiguous, otherwise copies to a fresh buffer
-- `fill_(value)` — in-place fill on contiguous tensors
+otter::has_nan(t);              // bool
+otter::has_inf(t);              // bool
+otter::max_abs_diff(a, b);      // double
+otter::shape_str(t);            // "[2, 3]"
+otter::dtype_str(t);            // "Float64"
+t.print("label");               // shape, dtype, values to stdout
+t.to_vector<double>();          // host-side copy in logical row-major order
+```
 
-
-## Kernels
-
-| Operation | Dispatch call | Notes |
-|---|---|---|
-| Elementwise add | `dispatch_binary(KernelType::Add, ...)` | Fast path for all-contiguous inputs |
-| Elementwise mul | `dispatch_binary(KernelType::Mul, ...)` | Same |
-| Elementwise neg | `dispatch_unary(KernelType::Neg, ...)` | Same |
-| Matrix multiply | `dispatch_matmul(...)` | Batched; batch dims can be stride-0 |
-| Reduce sum | `dispatch_unary(KernelType::ReduceSum, ...)` | Input must be contiguous |
-| Reduce to shape | `dispatch_unary(KernelType::ReduceTo, ...)` | Scatter-accumulate; used in broadcast backward |
-| Strided copy | `dispatch_copy(...)` | Handles stride-0 broadcast views |
-| Scalar read | `dispatch_element_read(...)` | Device-safe; explicit transfer on non-CPU backends |
-
+---
 
 ## Build
 
@@ -66,19 +126,16 @@ otter::Tensor c = t.contiguous();
 cmake -B build/debug   -GNinja -DCMAKE_BUILD_TYPE=Debug   -DCMAKE_CXX_COMPILER=clang++
 cmake -B build/release -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
 cmake --build build/debug
-ctest --test-dir build/debug --output-on-failure
+./build/debug/tests/otter_tests
 ```
 
-Debug builds enable `-fsanitize=address,undefined`. Both builds compile with `-Wall -Wextra -Werror`.
+Debug builds enable `-fsanitize=address,undefined`. Both compile with `-Wall -Wextra -Werror`.
 
+---
 
 ## Requirements
 
 - C++17 compiler (clang++ 10+)
 - CMake 3.20+
-- Ninja (optional, but recommended)
-
-
-## Scope
-
-OTTER currently supports `float64` on CPU. The dtype constraint runs through the full stack — memory allocation, buffer sizing, and kernel dispatch are all typed against it.
+- Ninja (optional, faster builds)
+- Linux or macOS (`mmap` and `posix_memalign` required)

@@ -1,0 +1,19 @@
+target_sources(otter_core PRIVATE
+    operation.cpp
+    broadcast_op.cpp
+    add_operation.cpp
+    sub_operation.cpp
+    mul_operation.cpp
+    div_operation.cpp
+    neg_operation.cpp
+    exp_operation.cpp
+    log_operation.cpp
+    sqrt_operation.cpp
+    relu_operation.cpp
+    matmul_operation.cpp
+    reshape_operation.cpp
+    slice_operation.cpp
+    sum_operation.cpp
+    mean_operation.cpp
+    transpose_operation.cpp
+)

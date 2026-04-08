@@ -15,12 +15,17 @@ class Tensor;   // forward — dispatch signatures only; full def not needed her
 enum class KernelType {
     // ── Binary element-wise ─────────────────────────────────────────────────
     Add,
+    Sub,
     Mul,
-    // Sub, Div — added when their Operations are split in
+    Div,
 
     // ── Unary element-wise ──────────────────────────────────────────────────
     Neg,
-    // Exp, Log, Relu — added when their Operations are split in
+    Exp,
+    Log,
+    Sqrt,
+    Relu,
+    ReluMask,   // maps x → (x > 0 ? 1.0 : 0.0) — relu backward mask
 
     // ── Reductions (unary signature, output has fewer / different dims) ─────
     ReduceSum,  // reduce all elements to scalar
@@ -108,6 +113,32 @@ public:
         virtual void call(const Tensor& src, Tensor& dst) const = 0;
     };
 
+    // In-place scale: dst[i] *= alpha.
+    // Used by optimizers and normalisation layers. No use_count assertion —
+    // shared buffer visibility across all Tensor copies is the intent.
+    struct ScaleDispatcher {
+        ScaleDispatcher()                                       = default;
+        virtual ~ScaleDispatcher()                              = default;
+        ScaleDispatcher(const ScaleDispatcher&)                 = delete;
+        ScaleDispatcher& operator=(const ScaleDispatcher&)      = delete;
+        ScaleDispatcher(ScaleDispatcher&&)                      = delete;
+        ScaleDispatcher& operator=(ScaleDispatcher&&)           = delete;
+        virtual void call(Tensor& dst, double alpha) const = 0;
+    };
+
+    // In-place axpy: dst[i] += alpha * src[i].  (BLAS saxpy semantics)
+    // Precondition: dst.shape() == src.shape() — no broadcasting.
+    struct AxpyDispatcher {
+        AxpyDispatcher()                                        = default;
+        virtual ~AxpyDispatcher()                               = default;
+        AxpyDispatcher(const AxpyDispatcher&)                   = delete;
+        AxpyDispatcher& operator=(const AxpyDispatcher&)        = delete;
+        AxpyDispatcher(AxpyDispatcher&&)                        = delete;
+        AxpyDispatcher& operator=(AxpyDispatcher&&)             = delete;
+        virtual void call(Tensor& dst, double alpha,
+                          const Tensor& src) const = 0;
+    };
+
     struct ElementReadDispatcher {
         ElementReadDispatcher()                                          = default;
         virtual ~ElementReadDispatcher()                                 = default;
@@ -173,6 +204,18 @@ public:
         return element_read_->call(t, flat_idx);
     }
 
+    void dispatch_scale(Tensor& dst, double alpha) const {
+        if (!scale_)
+            throw std::runtime_error("KernelEngine: scale dispatcher not registered");
+        scale_->call(dst, alpha);
+    }
+
+    void dispatch_axpy(Tensor& dst, double alpha, const Tensor& src) const {
+        if (!axpy_)
+            throw std::runtime_error("KernelEngine: axpy dispatcher not registered");
+        axpy_->call(dst, alpha, src);
+    }
+
 protected:
     // ── Registration — called by subclass constructors only ─────────────────
 
@@ -194,12 +237,21 @@ protected:
     void register_element_read(std::unique_ptr<ElementReadDispatcher> d) {
         element_read_ = std::move(d);
     }
+    void register_scale(std::unique_ptr<ScaleDispatcher> d) {
+        scale_ = std::move(d);
+    }
+    void register_axpy(std::unique_ptr<AxpyDispatcher> d) {
+        axpy_ = std::move(d);
+    }
 
     // ── Raw Buffer access — bodies in src/kernels/dispatcher.h ──────────────
     // Kernel .cpp files must include dispatcher.h to get these definitions.
     template<typename T>
     [[nodiscard]] const T* raw_const(const Buffer& buf) const noexcept;
 
+    // `const` on raw_const / raw_mutable means: these helpers do not mutate the
+    // KernelEngine registry. raw_mutable returns a mutable pointer into Buffer
+    // storage — callers write through it. The engine's own state is unchanged.
     template<typename T>
     [[nodiscard]] T* raw_mutable(Buffer& buf) const noexcept;
 
@@ -210,6 +262,8 @@ private:
     std::unique_ptr<MatMulDispatcher>      matmul_;
     std::unique_ptr<CopyDispatcher>        copy_;
     std::unique_ptr<ElementReadDispatcher> element_read_;
+    std::unique_ptr<ScaleDispatcher>       scale_;
+    std::unique_ptr<AxpyDispatcher>        axpy_;
 };
 
 } // namespace otter

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -64,6 +65,39 @@ void elementwise_strided(double* out, const double* a, const double* b,
             ob += coord * st_b  [static_cast<std::size_t>(d)];
         }
         out[oo] = op(a[oa], b[ob]);
+    }
+}
+
+// Fast unary elementwise path: contiguous tensors only.
+template<typename Op>
+void unary_contiguous(double* __restrict__ out,
+                      const double* __restrict__ a,
+                      std::size_t n, Op op) noexcept
+{
+    for (std::size_t i = 0; i < n; ++i) out[i] = op(a[i]);
+}
+
+// General unary elementwise: handles arbitrary strides.
+template<typename Op>
+void unary_strided(double* out, const double* a,
+                   const std::vector<std::size_t>& shape,
+                   const std::vector<std::size_t>& st_out,
+                   const std::vector<std::size_t>& st_a,
+                   Op op) noexcept
+{
+    const std::size_t ndim = shape.size();
+    std::size_t numel = 1;
+    for (auto d : shape) numel *= d;
+
+    for (std::size_t flat = 0; flat < numel; ++flat) {
+        std::size_t rem = flat, oo = 0, oa = 0;
+        for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
+            const std::size_t coord = rem % shape[static_cast<std::size_t>(d)];
+            rem /= shape[static_cast<std::size_t>(d)];
+            oo += coord * st_out[static_cast<std::size_t>(d)];
+            oa += coord * st_a  [static_cast<std::size_t>(d)];
+        }
+        out[oo] = op(a[oa]);
     }
 }
 
@@ -142,6 +176,68 @@ struct CPUElementReadDispatcher final : KernelEngine::ElementReadDispatcher {
     }
 };
 
+struct CPUSubDispatcher final : KernelEngine::BinaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUSubDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, const Tensor& b, Tensor& out) const override {
+        engine_->cpu_sub(a, b, out);
+    }
+};
+
+struct CPUDivDispatcher final : KernelEngine::BinaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUDivDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, const Tensor& b, Tensor& out) const override {
+        engine_->cpu_div(a, b, out);
+    }
+};
+
+struct CPUExpDispatcher final : KernelEngine::UnaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUExpDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, Tensor& out) const override { engine_->cpu_exp(a, out); }
+};
+
+struct CPULogDispatcher final : KernelEngine::UnaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPULogDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, Tensor& out) const override { engine_->cpu_log(a, out); }
+};
+
+struct CPUSqrtDispatcher final : KernelEngine::UnaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUSqrtDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, Tensor& out) const override { engine_->cpu_sqrt(a, out); }
+};
+
+struct CPUReluDispatcher final : KernelEngine::UnaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUReluDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, Tensor& out) const override { engine_->cpu_relu(a, out); }
+};
+
+struct CPUReluMaskDispatcher final : KernelEngine::UnaryDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUReluMaskDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& a, Tensor& out) const override { engine_->cpu_relu_mask(a, out); }
+};
+
+struct CPUScaleDispatcher final : KernelEngine::ScaleDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUScaleDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(Tensor& dst, double alpha) const override {
+        engine_->cpu_scale(dst, alpha);
+    }
+};
+
+struct CPUAxpyDispatcher final : KernelEngine::AxpyDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUAxpyDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(Tensor& dst, double alpha, const Tensor& src) const override {
+        engine_->cpu_axpy(dst, alpha, src);
+    }
+};
+
 } // namespace (anonymous)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,13 +247,22 @@ struct CPUElementReadDispatcher final : KernelEngine::ElementReadDispatcher {
 CPUKernelEngine::CPUKernelEngine() {
     register_fill        (std::make_unique<CPUFillDispatcher>        (this));
     register_binary      (KernelType::Add,       std::make_unique<CPUAddDispatcher>      (this));
+    register_binary      (KernelType::Sub,       std::make_unique<CPUSubDispatcher>      (this));
     register_binary      (KernelType::Mul,       std::make_unique<CPUMulDispatcher>      (this));
+    register_binary      (KernelType::Div,       std::make_unique<CPUDivDispatcher>      (this));
     register_unary       (KernelType::Neg,       std::make_unique<CPUNegDispatcher>      (this));
+    register_unary       (KernelType::Exp,       std::make_unique<CPUExpDispatcher>      (this));
+    register_unary       (KernelType::Log,       std::make_unique<CPULogDispatcher>      (this));
+    register_unary       (KernelType::Sqrt,      std::make_unique<CPUSqrtDispatcher>     (this));
+    register_unary       (KernelType::Relu,      std::make_unique<CPUReluDispatcher>     (this));
+    register_unary       (KernelType::ReluMask,  std::make_unique<CPUReluMaskDispatcher> (this));
     register_unary       (KernelType::ReduceSum, std::make_unique<CPUSumDispatcher>      (this));
     register_unary       (KernelType::ReduceTo,  std::make_unique<CPUReduceToDispatcher> (this));
     register_copy        (std::make_unique<CPUCopyDispatcher>        (this));
     register_matmul      (std::make_unique<CPUMatMulDispatcher>      (this));
     register_element_read(std::make_unique<CPUElementReadDispatcher> (this));
+    register_scale       (std::make_unique<CPUScaleDispatcher>       (this));
+    register_axpy        (std::make_unique<CPUAxpyDispatcher>        (this));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,6 +328,118 @@ void CPUKernelEngine::cpu_neg(const Tensor& a, Tensor& out) const {
     }
 }
 
+// ── Elementwise binary (sub / div) ───────────────────────────────────────────
+
+void CPUKernelEngine::cpu_sub(const Tensor& a, const Tensor& b, Tensor& out) const {
+    const double* pa = raw_const<double>(a.buffer())             + a.offset();
+    const double* pb = raw_const<double>(b.buffer())             + b.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    auto sub_op = [](double x, double y) noexcept { return x - y; };
+
+    if (all_contiguous({&a, &b, &out})) {
+        elementwise_contiguous(po, pa, pb, out.numel(), sub_op);
+    } else {
+        elementwise_strided(po, pa, pb,
+                            out.shape(), out.stride(), a.stride(), b.stride(),
+                            sub_op);
+    }
+}
+
+void CPUKernelEngine::cpu_div(const Tensor& a, const Tensor& b, Tensor& out) const {
+    // IEEE 754: b=0 produces ±inf or nan for Float64 — no check needed.
+    const double* pa = raw_const<double>(a.buffer())             + a.offset();
+    const double* pb = raw_const<double>(b.buffer())             + b.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    auto div_op = [](double x, double y) noexcept { return x / y; };
+
+    if (all_contiguous({&a, &b, &out})) {
+        elementwise_contiguous(po, pa, pb, out.numel(), div_op);
+    } else {
+        elementwise_strided(po, pa, pb,
+                            out.shape(), out.stride(), a.stride(), b.stride(),
+                            div_op);
+    }
+}
+
+// ── Elementwise unary (exp / log / sqrt / relu / relu_mask) ─────────────────
+
+void CPUKernelEngine::cpu_exp(const Tensor& a, Tensor& out) const {
+    assert(a.shape() == out.shape());
+    const double* in = raw_const<double>(a.buffer())             + a.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    auto op = [](double x) noexcept { return std::exp(x); };
+
+    if (all_contiguous({&a, &out})) {
+        unary_contiguous(po, in, a.numel(), op);
+    } else {
+        unary_strided(po, in, out.shape(), out.stride(), a.stride(), op);
+    }
+}
+
+void CPUKernelEngine::cpu_log(const Tensor& a, Tensor& out) const {
+    // IEEE 754: x=0 → -inf, x<0 → nan — no check needed.
+    assert(a.shape() == out.shape());
+    const double* in = raw_const<double>(a.buffer())             + a.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    auto op = [](double x) noexcept { return std::log(x); };
+
+    if (all_contiguous({&a, &out})) {
+        unary_contiguous(po, in, a.numel(), op);
+    } else {
+        unary_strided(po, in, out.shape(), out.stride(), a.stride(), op);
+    }
+}
+
+void CPUKernelEngine::cpu_sqrt(const Tensor& a, Tensor& out) const {
+    // IEEE 754: x<0 → nan, x=0 → 0.0 — no check needed.
+    assert(a.shape() == out.shape());
+    const double* in = raw_const<double>(a.buffer())             + a.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    auto op = [](double x) noexcept { return std::sqrt(x); };
+
+    if (all_contiguous({&a, &out})) {
+        unary_contiguous(po, in, a.numel(), op);
+    } else {
+        unary_strided(po, in, out.shape(), out.stride(), a.stride(), op);
+    }
+}
+
+void CPUKernelEngine::cpu_relu(const Tensor& a, Tensor& out) const {
+    assert(a.shape() == out.shape());
+    const double* in = raw_const<double>(a.buffer())             + a.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    // At x=0: output is 0.0 (right-hand derivative convention, matches PyTorch).
+    auto op = [](double x) noexcept { return x > 0.0 ? x : 0.0; };
+
+    if (all_contiguous({&a, &out})) {
+        unary_contiguous(po, in, a.numel(), op);
+    } else {
+        unary_strided(po, in, out.shape(), out.stride(), a.stride(), op);
+    }
+}
+
+void CPUKernelEngine::cpu_relu_mask(const Tensor& a, Tensor& out) const {
+    // Produces the relu backward mask: 1.0 where input > 0, 0.0 otherwise.
+    // At x=0: mask = 0.0 (subgradient 0, matches PyTorch convention).
+    assert(a.shape() == out.shape());
+    const double* in = raw_const<double>(a.buffer())             + a.offset();
+    double*       po = raw_mutable<double>(out.mutable_buffer()) + out.offset();
+
+    auto op = [](double x) noexcept { return x > 0.0 ? 1.0 : 0.0; };
+
+    if (all_contiguous({&a, &out})) {
+        unary_contiguous(po, in, a.numel(), op);
+    } else {
+        unary_strided(po, in, out.shape(), out.stride(), a.stride(), op);
+    }
+}
+
 // ── Reduce-all (sum) ──────────────────────────────────────────────────────────
 
 void CPUKernelEngine::cpu_sum(const Tensor& a, Tensor& out) const {
@@ -246,14 +463,16 @@ double CPUKernelEngine::cpu_element_read(const Tensor& t, std::size_t flat_idx) 
     return raw_const<double>(t.buffer())[flat_idx];
 }
 
-// ── Copy (arbitrary → contiguous) ────────────────────────────────────────────
+// ── Copy (arbitrary strides → arbitrary strides) ─────────────────────────────
+//
+// Both src and dst may have any strides. src and dst must have the same shape.
+// Used by Tensor::contiguous() (contiguous dst) and SliceOperation backward
+// (non-contiguous dst — a view into a zeros tensor at the slice position).
 
 void CPUKernelEngine::cpu_copy(const Tensor& src, Tensor& dst) const {
-    // dst is always contiguous (from Tensor::zeros); src may have any strides.
-    assert(dst.is_contiguous());
     assert(src.shape() == dst.shape());
 
-    const double* in  = raw_const<double>(src.buffer())        + src.offset();
+    const double* in  = raw_const<double>(src.buffer())          + src.offset();
     double*       out = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
 
     const std::size_t ndim  = src.shape().size();
@@ -262,9 +481,12 @@ void CPUKernelEngine::cpu_copy(const Tensor& src, Tensor& dst) const {
     // Odometer-style coordinate iteration: last dimension increments fastest.
     std::vector<std::size_t> coords(ndim, 0);
     for (std::size_t flat = 0; flat < numel; ++flat) {
-        std::size_t in_off = 0;
-        for (std::size_t d = 0; d < ndim; ++d) in_off += coords[d] * src.stride()[d];
-        out[flat] = in[in_off];
+        std::size_t in_off = 0, out_off = 0;
+        for (std::size_t d = 0; d < ndim; ++d) {
+            in_off  += coords[d] * src.stride()[d];
+            out_off += coords[d] * dst.stride()[d];
+        }
+        out[out_off] = in[in_off];
 
         for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
             if (++coords[static_cast<std::size_t>(d)] < src.shape()[static_cast<std::size_t>(d)])
@@ -390,6 +612,70 @@ void CPUKernelEngine::cpu_matmul(const Tensor& a, const Tensor& b, Tensor& out) 
                 }
                 res[out_base + i * out_rs + j * out_cs] = acc;
             }
+        }
+    }
+}
+
+// ── In-place scale: dst[i] *= alpha ──────────────────────────────────────────
+//
+// Handles contiguous (fast raw-pointer loop) and strided (odometer) layouts.
+// No use_count assertion — shared buffer visibility is the intent.
+
+void CPUKernelEngine::cpu_scale(Tensor& dst, double alpha) const {
+    const std::size_t n    = dst.numel();
+    const std::size_t ndim = dst.shape().size();
+    double* d = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
+
+    if (dst.is_contiguous()) {
+        for (std::size_t i = 0; i < n; ++i) d[i] *= alpha;
+        return;
+    }
+    // Strided: odometer iteration
+    std::vector<std::size_t> coords(ndim, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t off = 0;
+        for (std::size_t dim = 0; dim < ndim; ++dim) off += coords[dim] * dst.stride()[dim];
+        d[off] *= alpha;
+        for (int dim = static_cast<int>(ndim) - 1; dim >= 0; --dim) {
+            if (++coords[static_cast<std::size_t>(dim)] < dst.shape()[static_cast<std::size_t>(dim)])
+                break;
+            coords[static_cast<std::size_t>(dim)] = 0;
+        }
+    }
+}
+
+// ── In-place axpy: dst[i] += alpha * src[i] ──────────────────────────────────
+//
+// Precondition: dst.shape() == src.shape() (no broadcasting).
+// Both may have arbitrary strides. Fast path when both are contiguous.
+
+void CPUKernelEngine::cpu_axpy(Tensor& dst, double alpha, const Tensor& src) const {
+    assert(dst.shape() == src.shape() &&
+           "cpu_axpy: dst and src must have the same shape");
+    const std::size_t n    = dst.numel();
+    const std::size_t ndim = dst.shape().size();
+
+    if (dst.is_contiguous() && src.is_contiguous()) {
+        double*       d = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
+        const double* s = raw_const <double>(src.buffer())          + src.offset();
+        for (std::size_t i = 0; i < n; ++i) d[i] += alpha * s[i];
+        return;
+    }
+    // Mixed or both strided: independent odometer for each
+    std::vector<std::size_t> coords(ndim, 0);
+    double*       d = raw_mutable<double>(dst.mutable_buffer());
+    const double* s = raw_const <double>(src.buffer());
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t doff = dst.offset(), soff = src.offset();
+        for (std::size_t dim = 0; dim < ndim; ++dim) {
+            doff += coords[dim] * dst.stride()[dim];
+            soff += coords[dim] * src.stride()[dim];
+        }
+        d[doff] += alpha * s[soff];
+        for (int dim = static_cast<int>(ndim) - 1; dim >= 0; --dim) {
+            if (++coords[static_cast<std::size_t>(dim)] < dst.shape()[static_cast<std::size_t>(dim)])
+                break;
+            coords[static_cast<std::size_t>(dim)] = 0;
         }
     }
 }

@@ -30,13 +30,24 @@ public:
 
     void   cpu_fill        (Tensor& t, double value) const;
     void   cpu_add         (const Tensor& a, const Tensor& b, Tensor& out) const;
+    void   cpu_sub         (const Tensor& a, const Tensor& b, Tensor& out) const;
     void   cpu_mul         (const Tensor& a, const Tensor& b, Tensor& out) const;
+    void   cpu_div         (const Tensor& a, const Tensor& b, Tensor& out) const;
     void   cpu_neg         (const Tensor& a, Tensor& out) const;
+    void   cpu_exp         (const Tensor& a, Tensor& out) const;
+    void   cpu_log         (const Tensor& a, Tensor& out) const;
+    void   cpu_sqrt        (const Tensor& a, Tensor& out) const;
+    void   cpu_relu        (const Tensor& a, Tensor& out) const;
+    void   cpu_relu_mask   (const Tensor& a, Tensor& out) const;
     void   cpu_sum         (const Tensor& a, Tensor& out) const;
     void   cpu_copy        (const Tensor& src, Tensor& dst) const;
     void   cpu_reduce_to   (const Tensor& src, Tensor& dst) const;
     void   cpu_matmul      (const Tensor& a, const Tensor& b, Tensor& out) const;
     double cpu_element_read(const Tensor& t, std::size_t flat_idx) const;
+
+    // In-place primitives — no use_count check; shared visibility is the intent.
+    void   cpu_scale(Tensor& dst, double alpha) const;
+    void   cpu_axpy (Tensor& dst, double alpha, const Tensor& src) const;
 };
 
 } // namespace otter

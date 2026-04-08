@@ -5,6 +5,9 @@
 #include <initializer_list>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <unordered_set>
 #include <vector>
 
 #include "otter/core/dtype.h"
@@ -14,6 +17,10 @@
 
 namespace otter {
 
+// Forward declarations — full definitions follow after Tensor or in other headers.
+struct GradAccumulator;  // defined below, after Tensor (needs Tensor to be complete)
+namespace ops { class Operation; }  // defined in include/otter/ops/operation.h
+
 // Tensor — value-type multi-dimensional array.
 //
 // Multiple Tensors may share one Buffer (view semantics): copies are cheap,
@@ -22,23 +29,58 @@ namespace otter {
 // The Rule of Zero applies: shared_ptr<Buffer> manages the allocation; all
 // five special members are compiler-generated and correct.
 //
-// Autograd fields are added in the Operations step. This is the minimal
-// Tensor needed by CPUKernelEngine.
+// Autograd: requires_grad_, is_leaf_, grad_accum_, grad_op_ implement reverse-mode
+// automatic differentiation. execute() in Operation sets these on outputs; the user
+// sets requires_grad via the factory methods (zeros/from_data with requires_grad=true).
 class Tensor {
 public:
     // ── Factory ──────────────────────────────────────────────────────────────
 
     // Allocates a zero-initialised contiguous tensor via backend.
-    static Tensor zeros(const std::vector<std::size_t>& shape,
-                        Backend& backend,
-                        DType dtype = DType::Float64);
+    // requires_grad=true: tensor participates in backward(); grad_accum_ is allocated.
+    [[nodiscard]] static Tensor zeros(const std::vector<std::size_t>& shape,
+                                      Backend& backend,
+                                      DType dtype         = DType::Float64,
+                                      bool  requires_grad = false);
+    static Tensor zeros(const std::vector<std::size_t>&, Backend&&,
+                        DType = DType::Float64, bool = false) = delete;  // Backend must outlive Tensor
+
+    // Allocates a ones-initialised contiguous tensor via backend.
+    [[nodiscard]] static Tensor ones(const std::vector<std::size_t>& shape,
+                                     Backend& backend,
+                                     DType dtype         = DType::Float64,
+                                     bool  requires_grad = false);
+    static Tensor ones(const std::vector<std::size_t>&, Backend&&,
+                       DType = DType::Float64, bool = false) = delete;
+
+    // Allocates a tensor filled with a constant value.
+    [[nodiscard]] static Tensor full(const std::vector<std::size_t>& shape,
+                                     double value,
+                                     Backend& backend,
+                                     DType dtype         = DType::Float64,
+                                     bool  requires_grad = false);
+    static Tensor full(const std::vector<std::size_t>&, double, Backend&&,
+                       DType = DType::Float64, bool = false) = delete;
+
+    // Allocates a zero-initialised tensor with the same shape, dtype, and backend as t.
+    [[nodiscard]] static Tensor zeros_like(const Tensor& t,
+                                           bool requires_grad = false);
+
+    // Allocates a ones-initialised tensor with the same shape, dtype, and backend as t.
+    [[nodiscard]] static Tensor ones_like(const Tensor& t,
+                                          bool requires_grad = false);
 
     // Copies data into a fresh contiguous tensor.
     // T must have a dtype_utils::dtype_of<T> specialisation (currently double).
     template<typename T>
-    static Tensor from_data(const std::vector<T>& data,
-                            const std::vector<std::size_t>& shape,
-                            Backend& backend);
+    [[nodiscard]] static Tensor from_data(const std::vector<T>&        data,
+                                          const std::vector<std::size_t>& shape,
+                                          Backend& backend,
+                                          bool     requires_grad = false);
+    template<typename T>
+    static Tensor from_data(const std::vector<T>&,
+                            const std::vector<std::size_t>&,
+                            Backend&&, bool = false) = delete;  // Backend must outlive Tensor
 
     // ── Rule of Zero — shared_ptr<Buffer> manages the allocation ─────────────
     Tensor() = default;
@@ -53,7 +95,19 @@ public:
     [[nodiscard]] DType                           dtype()  const noexcept { return dtype_;  }
     [[nodiscard]] bool is_contiguous()  const noexcept { return is_contiguous_; }
     [[nodiscard]] std::size_t numel()   const noexcept;
-    [[nodiscard]] Backend&    backend() const;  // asserts defined()
+    // Returns the backend this tensor was allocated on.
+    // Returns a mutable Backend& from a const method: Backend is a non-owning
+    // observer of the tensor, not owned state. Returning const Backend& would
+    // prevent allocating tensors from const Tensor refs in backward().
+    [[nodiscard]] Backend& backend() const;  // asserts defined()
+
+    // ── Autograd metadata ─────────────────────────────────────────────────────
+    [[nodiscard]] bool requires_grad() const noexcept { return requires_grad_; }
+
+    // True for tensors created directly by the user (via zeros/from_data).
+    // False for tensors produced by Operation::execute().
+    // Distinct from grad_op_==nullptr, which can also mean the graph was cleared.
+    [[nodiscard]] bool is_leaf()       const noexcept { return is_leaf_;       }
 
     // ── Buffer access (internal — for KernelEngine only) ─────────────────────
     // Raw data is further gated by Passkey<KernelEngine> inside Buffer.
@@ -63,11 +117,17 @@ public:
     // ── Layout ───────────────────────────────────────────────────────────────
 
     // Returns a new Tensor sharing the same Buffer with new shape/stride.
-    // No autograd — pure layout alias. The returned Tensor is a fresh value
-    // with no grad history.
+    // Buffer aliasing: mutations via one view are visible in all others sharing it.
+    // No autograd — pure layout alias. The returned Tensor has no grad history.
     // Precondition: new_shape.size() == new_stride.size().
     [[nodiscard]] Tensor view(std::vector<std::size_t> new_shape,
                               std::vector<std::size_t> new_stride) const;
+
+    // Overload with explicit offset — for slice views where the sub-region
+    // starts at a different position than the parent tensor's offset.
+    [[nodiscard]] Tensor view(std::vector<std::size_t> new_shape,
+                              std::vector<std::size_t> new_stride,
+                              std::size_t              new_offset) const;
 
     // Returns a contiguous copy if !is_contiguous(), otherwise *this.
     // Intentionally not differentiable — it is a data normalisation step.
@@ -78,13 +138,88 @@ public:
     // On a CUDA backend this becomes a kernel launch; never a silent host deref.
     [[nodiscard]] double at(std::initializer_list<std::size_t> indices) const;
 
+    // ── Data extraction ──────────────────────────────────────────────────────
+    // Returns all elements in logical row-major order as a host-side vector.
+    // T must be double (Float64) or float (Float32). Handles arbitrary strides.
+    // O(n) device→host transfers via dispatch_element_read — diagnostic use only.
+    template<typename T>
+    [[nodiscard]] std::vector<T> to_vector() const;
+
+    // ── Debug output ──────────────────────────────────────────────────────────
+    // Prints shape, dtype, and values to stdout. label is optional.
+    void print(const std::string& label = "") const;
+
     // ── In-place fill ────────────────────────────────────────────────────────
-    // Writes value to every element. Asserts is_contiguous (always true for
-    // freshly allocated tensors from zeros()). Not differentiable.
+    // Writes value to every element. Requires: (1) contiguous, (2) uniquely
+    // owned buffer (use_count == 1). Both conditions hold for freshly allocated
+    // tensors from zeros(). Not safe on views or copies. Not differentiable.
     void fill_(double value);
 
+    // ── Operations ───────────────────────────────────────────────────────────
+    // Each creates the corresponding Operation and calls execute().
+    // mul() and matmul() are added in steps 4 and 5 respectively.
+
+    [[nodiscard]] Tensor add(const Tensor& other) const;
+    [[nodiscard]] Tensor sub(const Tensor& other) const;
+    [[nodiscard]] Tensor mul(const Tensor& other) const;
+    [[nodiscard]] Tensor div(const Tensor& other) const;
+    [[nodiscard]] Tensor matmul(const Tensor& other) const;
+    [[nodiscard]] Tensor neg()  const;
+    [[nodiscard]] Tensor exp()  const;
+    [[nodiscard]] Tensor log()  const;
+    [[nodiscard]] Tensor sqrt() const;
+    [[nodiscard]] Tensor relu() const;
+    [[nodiscard]] Tensor sum()  const;
+    [[nodiscard]] Tensor mean() const;
+
+    // ── View operations (differentiable) ────────────────────────────────────
+    // Each is an Operation subclass so gradients flow through them.
+
+    // Reshape to new_shape without copying data. Input must be contiguous.
+    [[nodiscard]] Tensor reshape(std::vector<std::size_t> new_shape) const;
+
+    // Swap two dimensions. Works on non-contiguous tensors.
+    [[nodiscard]] Tensor transpose(std::size_t dim0, std::size_t dim1) const;
+
+    // Extract length elements starting at start along dim. No data copy.
+    [[nodiscard]] Tensor slice(std::size_t dim,
+                               std::size_t start,
+                               std::size_t length) const;
+
+    // Expand to target_shape using stride-zero semantics. No data copy.
+    [[nodiscard]] Tensor broadcast_to(std::vector<std::size_t> target_shape) const;
+
+    // ── Autograd methods ──────────────────────────────────────────────────────
+
+    // Returns the accumulated gradient tensor.
+    // Undefined (default-constructed) if no gradient has been accumulated yet.
+    [[nodiscard]] Tensor grad() const noexcept;
+
+    // Add `incoming` into this tensor's gradient accumulator.
+    // incoming is detached internally to prevent second-order grad cycles.
+    // Precondition: requires_grad() == true.
+    // Implemented alongside Tensor::add() (step 3) — declared here for the interface.
+    void accumulate_grad(const Tensor& incoming) const;
+
+    // Reset the gradient accumulator to undefined.
+    // Call before each forward pass in a training loop.
+    void zero_grad() noexcept;
+
+    // Returns a shallow copy sharing the same Buffer with requires_grad=false,
+    // no grad_accum_, no grad_op_. No data is copied.
+    // Use to stop gradient flow or pass data to non-differentiable operations.
+    // Note: is_leaf_ is NOT changed — detach does not make a computed tensor a leaf.
+    [[nodiscard]] Tensor detach() const noexcept;
+
+    // Entry point for backward pass. Seeds gradient with ones if not provided.
+    // retain_graph=false (default): clears saved inputs after traversal.
+    // retain_graph=true: leaves graph intact for a second backward call.
+    // Implemented in step 3 alongside Operation and the concrete ops.
+    void backward(bool retain_graph = false);
+    void backward(Tensor seed, bool retain_graph = false);
+
 private:
-    // Private constructor used by factory methods and view().
+    // Private constructor used by factory methods, view(), and Operation::execute().
     Tensor(std::shared_ptr<Buffer>  buf,
            std::vector<std::size_t> shape,
            std::vector<std::size_t> stride,
@@ -92,23 +227,69 @@ private:
            DType                    dtype,
            Backend*                 backend);
 
+    // Topological DFS for backward traversal. Defined in tensor.cpp.
+    static void topo_dfs(const Tensor&                         t,
+                         std::unordered_set<ops::Operation*>&  visited,
+                         std::vector<Tensor>&                  order);
+
     std::shared_ptr<Buffer>  buffer_;
     std::vector<std::size_t> shape_;
     std::vector<std::size_t> stride_;
     std::size_t              offset_        = 0;
     DType                    dtype_         = DType::Float64;
     Backend*                 backend_       = nullptr;  // non-owning; Backend must outlive Tensor
-    bool                     is_contiguous_ = true;     // cached at construction
+
+    // Cached at construction from stride_ and shape_. Safe because we have no
+    // in-place stride-mutation ops — any layout change creates a new Tensor.
+    bool                     is_contiguous_ = true;
+
+    // ── Autograd fields ───────────────────────────────────────────────────────
+
+    bool                               requires_grad_ = false;
+    bool                               is_leaf_       = true;
+
+    // Shared across all value-type copies of the same logical tensor. This is the
+    // mechanism that makes copy semantics work with gradient accumulation:
+    // a grad flowing into saved_inputs_[i] (a copy) updates the user's original.
+    // mutable: accumulate_grad() and zero_grad() are logically const operations.
+    mutable std::shared_ptr<GradAccumulator> grad_accum_;
+
+    // Non-null for computed tensors; null for leaves and after graph cleanup.
+    // Use is_leaf_ to distinguish "true leaf" from "cleaned computed tensor".
+    // mutable: backward cleanup nulls it out on const Tensor refs inside saved_inputs_.
+    mutable std::shared_ptr<ops::Operation>  grad_op_;
+
+    // Operation::execute() sets autograd fields (is_leaf_, requires_grad_,
+    // grad_accum_, grad_op_) on output tensors directly via friend access.
+    friend class ops::Operation;
 };
 
-// ── from_data template body ────────────────────────────────────────────────────
+
+// =============================================================================
+// ── GradAccumulator — defined after Tensor is complete ───────────────────────
+// =============================================================================
+//
+// Holds the accumulated gradient for a leaf tensor.
+// All value-type copies of a logical tensor share one GradAccumulator via
+// shared_ptr — the mechanism that makes copy semantics work with autograd.
+// Zero runtime overhead when requires_grad is false (grad_accum_ stays null).
+
+struct GradAccumulator {
+    Tensor grad_tensor;  // undefined (default-constructed) until first accumulate_grad()
+};
+
+
+// =============================================================================
+// ── from_data template body ───────────────────────────────────────────────────
 // Defined here because it is a template — all callers must see the body.
 // Backend and Buffer are fully defined via the includes above.
+// =============================================================================
 
 template<typename T>
-Tensor Tensor::from_data(const std::vector<T>& data,
+Tensor Tensor::from_data(const std::vector<T>&           data,
                           const std::vector<std::size_t>& shape,
-                          Backend& backend)
+                          Backend&                        backend,
+                          bool                            requires_grad)
 {
     std::size_t n = 1;
     for (auto d : shape) n *= d;
@@ -118,9 +299,52 @@ Tensor Tensor::from_data(const std::vector<T>& data,
 
     auto strides = detail::contiguous_strides(shape);
     auto buf = std::make_shared<Buffer>(n * sizeof(T), backend,
-                                         static_cast<const void*>(data.data()));
-    return Tensor(std::move(buf), shape, std::move(strides), 0,
-                  dtype_utils::dtype_of<T>::value, &backend);
+                                        static_cast<const void*>(data.data()));
+    Tensor t(std::move(buf), shape, std::move(strides), 0,
+             dtype_utils::dtype_of<T>::value, &backend);
+    if (requires_grad) {
+        t.requires_grad_ = true;
+        t.grad_accum_    = std::make_shared<GradAccumulator>();
+    }
+    return t;
+}
+
+// =============================================================================
+// ── to_vector template body ───────────────────────────────────────────────────
+// Defined here because it is a template — all callers must see the body.
+// Iterates logical row-major coordinates, maps to physical flat index using
+// offset_ + coords·stride_, and reads each element via dispatch_element_read.
+// =============================================================================
+
+template<typename T>
+std::vector<T> Tensor::to_vector() const {
+    static_assert(std::is_same_v<T, double> || std::is_same_v<T, float>,
+                  "to_vector: T must be double or float");
+    if (!defined())
+        throw std::runtime_error("to_vector: tensor is undefined");
+
+    const std::size_t n    = numel();
+    const std::size_t ndim = shape_.size();
+    std::vector<T> result;
+    result.reserve(n);
+
+    // Odometer-style iteration over logical coordinates in row-major order.
+    // Maps coords → physical flat index using offset_ + coords·stride_.
+    std::vector<std::size_t> coords(ndim, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t flat = offset_;
+        for (std::size_t d = 0; d < ndim; ++d)
+            flat += coords[d] * stride_[d];
+        result.push_back(static_cast<T>(
+            backend_->kernel_engine()->dispatch_element_read(*this, flat)));
+
+        for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
+            const auto ud = static_cast<std::size_t>(d);
+            if (++coords[ud] < shape_[ud]) break;
+            coords[ud] = 0;
+        }
+    }
+    return result;
 }
 
 } // namespace otter

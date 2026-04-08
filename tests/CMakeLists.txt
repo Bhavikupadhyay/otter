@@ -3,6 +3,15 @@ add_executable(otter_tests
     test_memory.cpp
     test_kernel.cpp
     test_cpu_kernels.cpp
+    test_tensor.cpp
+    test_autograd.cpp
+    test_broadcast.cpp
+    test_matmul.cpp
+    test_views.cpp
+    test_math_ops.cpp
+    test_factories_debug.cpp
+    test_mean.cpp
+    test_optim.cpp
 )
 
 target_link_libraries(otter_tests PRIVATE otter_core)

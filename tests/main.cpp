@@ -6,12 +6,30 @@ namespace otter::test {
 void run_memory_tests();
 void run_kernel_tests();
 void run_cpu_kernel_tests();
+void run_tensor_tests();
+void run_autograd_tests();
+void run_broadcast_tests();
+void run_matmul_tests();
+void run_views_tests();
+void run_math_ops_tests();
+void run_factories_debug_tests();
+void run_mean_tests();
+void run_optim_tests();
 } // namespace otter::test
 
 int main() {
     otter::test::run_memory_tests();
     otter::test::run_kernel_tests();
     otter::test::run_cpu_kernel_tests();
+    otter::test::run_tensor_tests();
+    otter::test::run_autograd_tests();
+    otter::test::run_broadcast_tests();
+    otter::test::run_matmul_tests();
+    otter::test::run_views_tests();
+    otter::test::run_math_ops_tests();
+    otter::test::run_factories_debug_tests();
+    otter::test::run_mean_tests();
+    otter::test::run_optim_tests();
 
     std::cout << "\n"
               << otter::test::tests_passed << " / "
