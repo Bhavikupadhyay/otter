@@ -68,7 +68,11 @@ public:
     [[nodiscard]] DType                           dtype()  const noexcept { return dtype_;  }
     [[nodiscard]] bool is_contiguous()  const noexcept { return is_contiguous_; }
     [[nodiscard]] std::size_t numel()   const noexcept;
-    [[nodiscard]] const Backend& backend() const;  // asserts defined()
+    // Returns the backend this tensor was allocated on.
+    // Returns a mutable Backend& from a const method: Backend is a non-owning
+    // observer of the tensor, not owned state. Returning const Backend& would
+    // prevent allocating tensors from const Tensor refs in backward().
+    [[nodiscard]] Backend& backend() const;  // asserts defined()
 
     // ── Autograd metadata ─────────────────────────────────────────────────────
     [[nodiscard]] bool requires_grad() const noexcept { return requires_grad_; }

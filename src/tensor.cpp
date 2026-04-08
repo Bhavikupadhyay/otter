@@ -52,7 +52,7 @@ std::size_t Tensor::numel() const noexcept {
     return n;
 }
 
-const Backend& Tensor::backend() const {
+Backend& Tensor::backend() const {
     if (!defined())
         throw std::runtime_error("Tensor::backend() called on undefined tensor");
     return *backend_;
