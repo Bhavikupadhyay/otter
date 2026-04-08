@@ -56,11 +56,15 @@ public:
     [[nodiscard]] std::vector<Tensor> execute(const std::vector<Tensor>& inputs);
 
     // Read access to saved inputs — used by Tensor::backward() traversal.
-    [[nodiscard]] const std::vector<Tensor>& inputs() const noexcept { return saved_inputs_; }
+    [[nodiscard]] const std::vector<Tensor>& inputs()  const noexcept { return saved_inputs_; }
 
-    // Drop saved input references — releases Buffer refcounts held through saved_inputs_.
+    // Read access to saved outputs — used by backward() implementations that need
+    // to reuse the forward output (e.g. ExpOperation, SqrtOperation).
+    [[nodiscard]] const std::vector<Tensor>& outputs() const noexcept { return saved_outputs_; }
+
+    // Drop saved input and output references — releases Buffer refcounts.
     // Called by Tensor::backward() after the gradient has been propagated (retain_graph=false).
-    void clear_saved() noexcept { saved_inputs_.clear(); }
+    void clear_saved() noexcept { saved_inputs_.clear(); saved_outputs_.clear(); }
 
     // ── Backward pass — implemented by each concrete op ───────────────────────
     //
@@ -96,6 +100,11 @@ protected:
     // Contents are the broadcast-adjusted inputs (same shape as grad_outputs).
     // mutable so clear_saved() can be called on a const Operation ref.
     mutable std::vector<Tensor> saved_inputs_;
+
+    // Saved outputs from execute() — used by ops whose backward needs the forward
+    // output value (exp: grad * out; sqrt: grad / (2 * out)).
+    // These are the plain output tensors before grad_op_ wiring.
+    mutable std::vector<Tensor> saved_outputs_;
 };
 
 } // namespace otter

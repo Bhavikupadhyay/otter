@@ -122,9 +122,16 @@ public:
     // mul() and matmul() are added in steps 4 and 5 respectively.
 
     [[nodiscard]] Tensor add(const Tensor& other) const;
+    [[nodiscard]] Tensor sub(const Tensor& other) const;
     [[nodiscard]] Tensor mul(const Tensor& other) const;
+    [[nodiscard]] Tensor div(const Tensor& other) const;
     [[nodiscard]] Tensor matmul(const Tensor& other) const;
-    [[nodiscard]] Tensor sum() const;
+    [[nodiscard]] Tensor neg()  const;
+    [[nodiscard]] Tensor exp()  const;
+    [[nodiscard]] Tensor log()  const;
+    [[nodiscard]] Tensor sqrt() const;
+    [[nodiscard]] Tensor relu() const;
+    [[nodiscard]] Tensor sum()  const;
 
     // ── View operations (differentiable) ────────────────────────────────────
     // Each is an Operation subclass so gradients flow through them.

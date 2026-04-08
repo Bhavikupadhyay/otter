@@ -15,12 +15,17 @@ class Tensor;   // forward — dispatch signatures only; full def not needed her
 enum class KernelType {
     // ── Binary element-wise ─────────────────────────────────────────────────
     Add,
+    Sub,
     Mul,
-    // Sub, Div — added when their Operations are split in
+    Div,
 
     // ── Unary element-wise ──────────────────────────────────────────────────
     Neg,
-    // Exp, Log, Relu — added when their Operations are split in
+    Exp,
+    Log,
+    Sqrt,
+    Relu,
+    ReluMask,   // maps x → (x > 0 ? 1.0 : 0.0) — relu backward mask
 
     // ── Reductions (unary signature, output has fewer / different dims) ─────
     ReduceSum,  // reduce all elements to scalar

@@ -85,8 +85,11 @@ std::vector<Tensor> Operation::execute(const std::vector<Tensor>& inputs) {
     // ── 2. Save inputs + run forward ──────────────────────────────────────────
     // saved_inputs_ holds broadcast-adjusted inputs, NOT the originals.
     // MulOp backward needs b at broadcast shape (same shape as grad_out).
-    saved_inputs_ = actual_inputs;
-    auto outputs  = forward(actual_inputs);
+    saved_inputs_  = actual_inputs;
+    auto outputs   = forward(actual_inputs);
+    // saved_outputs_ holds the plain forward outputs (before grad_op_ wiring).
+    // Used by ops whose backward reuses the output value (exp, sqrt).
+    saved_outputs_ = outputs;
 
     // ── 3. Decide whether to wire the grad graph ───────────────────────────────
     // Skip entirely if NoGradGuard is active — outputs are plain tensors.

@@ -11,6 +11,7 @@ void run_autograd_tests();
 void run_broadcast_tests();
 void run_matmul_tests();
 void run_views_tests();
+void run_math_ops_tests();
 } // namespace otter::test
 
 int main() {
@@ -22,6 +23,7 @@ int main() {
     otter::test::run_broadcast_tests();
     otter::test::run_matmul_tests();
     otter::test::run_views_tests();
+    otter::test::run_math_ops_tests();
 
     std::cout << "\n"
               << otter::test::tests_passed << " / "

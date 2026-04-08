@@ -8,10 +8,17 @@
 #include "otter/ops/operation.h"
 #include "ops/broadcast_op.h"
 #include "otter/ops/add_operation.h"
+#include "otter/ops/div_operation.h"
+#include "otter/ops/exp_operation.h"
+#include "otter/ops/log_operation.h"
 #include "otter/ops/matmul_operation.h"
 #include "otter/ops/mul_operation.h"
+#include "otter/ops/neg_operation.h"
+#include "otter/ops/relu_operation.h"
 #include "otter/ops/reshape_operation.h"
 #include "otter/ops/slice_operation.h"
+#include "otter/ops/sqrt_operation.h"
+#include "otter/ops/sub_operation.h"
 #include "otter/ops/sum_operation.h"
 #include "otter/ops/transpose_operation.h"
 
@@ -186,14 +193,42 @@ void Tensor::accumulate_grad(const Tensor& incoming) const {
     grad_accum_->grad_tensor = grad_accum_->grad_tensor.add(incoming.detach());
 }
 
-// ── Tensor::add / sum (wired here; mul/matmul added in later steps) ───────────
+// ── Tensor operations ─────────────────────────────────────────────────────────
 
 Tensor Tensor::add(const Tensor& other) const {
     return std::make_shared<AddOperation>()->execute({*this, other})[0];
 }
 
+Tensor Tensor::sub(const Tensor& other) const {
+    return std::make_shared<SubOperation>()->execute({*this, other})[0];
+}
+
 Tensor Tensor::mul(const Tensor& other) const {
     return std::make_shared<MulOperation>()->execute({*this, other})[0];
+}
+
+Tensor Tensor::div(const Tensor& other) const {
+    return std::make_shared<DivOperation>()->execute({*this, other})[0];
+}
+
+Tensor Tensor::neg() const {
+    return std::make_shared<NegOperation>()->execute({*this})[0];
+}
+
+Tensor Tensor::exp() const {
+    return std::make_shared<ExpOperation>()->execute({*this})[0];
+}
+
+Tensor Tensor::log() const {
+    return std::make_shared<LogOperation>()->execute({*this})[0];
+}
+
+Tensor Tensor::sqrt() const {
+    return std::make_shared<SqrtOperation>()->execute({*this})[0];
+}
+
+Tensor Tensor::relu() const {
+    return std::make_shared<ReluOperation>()->execute({*this})[0];
 }
 
 Tensor Tensor::matmul(const Tensor& other) const {
