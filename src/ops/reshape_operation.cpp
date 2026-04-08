@@ -6,7 +6,7 @@
 
 #include "otter/detail/stride_utils.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> ReshapeOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "ReshapeOperation: requires exactly 1 input");
@@ -47,4 +47,4 @@ std::vector<Tensor> ReshapeOperation::backward(const std::vector<Tensor>& grad_o
     return {grad_c.view(orig_shape, detail::contiguous_strides(orig_shape))};
 }
 
-} // namespace otter
+} // namespace otter::ops

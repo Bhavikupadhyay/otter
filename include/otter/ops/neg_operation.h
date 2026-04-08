@@ -2,7 +2,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // NegOperation — element-wise negation: out = -x.
 //
@@ -21,4 +21,4 @@ protected:
         const std::vector<Tensor>& inputs) override;
 };
 
-} // namespace otter
+} // namespace otter::ops

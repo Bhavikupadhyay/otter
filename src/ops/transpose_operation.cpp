@@ -3,7 +3,7 @@
 #include <cassert>
 #include <stdexcept>
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> TransposeOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "TransposeOperation: requires exactly 1 input");
@@ -41,4 +41,4 @@ std::vector<Tensor> TransposeOperation::backward(const std::vector<Tensor>& grad
     return {grad.view(std::move(new_shape), std::move(new_stride))};
 }
 
-} // namespace otter
+} // namespace otter::ops

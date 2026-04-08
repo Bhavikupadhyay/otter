@@ -2,7 +2,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // SumOperation — reduce all elements to a scalar: out = sum(a), shape {1}.
 //
@@ -25,4 +25,4 @@ protected:
         const std::vector<Tensor>& inputs) override;
 };
 
-} // namespace otter
+} // namespace otter::ops

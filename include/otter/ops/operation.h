@@ -7,7 +7,7 @@
 
 #include "otter/tensor.h"  // full Tensor definition — saved_inputs_, backward args
 
-namespace otter {
+namespace otter::ops {
 
 // BroadcastSpec — returned by Operation::infer_shapes().
 // input_target_shapes[i] is the shape that input i must have before forward() runs.
@@ -107,4 +107,4 @@ protected:
     mutable std::vector<Tensor> saved_outputs_;
 };
 
-} // namespace otter
+} // namespace otter::ops

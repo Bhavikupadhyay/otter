@@ -3,7 +3,7 @@
 #include <cassert>
 #include <stdexcept>
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> SliceOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "SliceOperation: requires exactly 1 input");
@@ -58,4 +58,4 @@ std::vector<Tensor> SliceOperation::backward(const std::vector<Tensor>& grad_out
     return {grad_input};
 }
 
-} // namespace otter
+} // namespace otter::ops

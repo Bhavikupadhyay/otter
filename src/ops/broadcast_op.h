@@ -5,7 +5,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // BroadcastOp — view operation that expands a tensor to a larger shape using
 // stride-zero semantics. Inserted automatically by execute() when inputs to
@@ -40,4 +40,4 @@ private:
     std::vector<std::size_t> target_shape_;
 };
 
-} // namespace otter
+} // namespace otter::ops

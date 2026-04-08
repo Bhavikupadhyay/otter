@@ -6,7 +6,7 @@
 #include "otter/autograd/no_grad_guard.h"
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> ReluOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "ReluOperation: requires exactly 1 input");
@@ -38,4 +38,4 @@ std::vector<Tensor> ReluOperation::backward(const std::vector<Tensor>& grad_outp
     return {result};
 }
 
-} // namespace otter
+} // namespace otter::ops

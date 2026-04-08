@@ -6,7 +6,7 @@
 #include "otter/autograd/no_grad_guard.h"
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> SqrtOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "SqrtOperation: requires exactly 1 input");
@@ -43,4 +43,4 @@ std::vector<Tensor> SqrtOperation::backward(const std::vector<Tensor>& grad_outp
     return {result};
 }
 
-} // namespace otter
+} // namespace otter::ops

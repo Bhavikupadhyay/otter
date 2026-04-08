@@ -7,7 +7,7 @@
 #include "otter/autograd/no_grad_guard.h"
 #include "otter/detail/broadcast.h"
 
-namespace otter {
+namespace otter::ops {
 
 // ── BroadcastSpec::infer_shapes default — NumPy elementwise rules ─────────────
 //
@@ -113,4 +113,4 @@ std::vector<Tensor> Operation::execute(const std::vector<Tensor>& inputs) {
     return outputs;
 }
 
-} // namespace otter
+} // namespace otter::ops

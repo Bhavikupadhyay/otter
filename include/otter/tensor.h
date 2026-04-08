@@ -19,7 +19,7 @@ namespace otter {
 
 // Forward declarations — full definitions follow after Tensor or in other headers.
 struct GradAccumulator;  // defined below, after Tensor (needs Tensor to be complete)
-class  Operation;        // defined in include/otter/ops/operation.h (added in step 2)
+namespace ops { class Operation; }  // defined in include/otter/ops/operation.h
 
 // Tensor — value-type multi-dimensional array.
 //
@@ -170,6 +170,7 @@ public:
     [[nodiscard]] Tensor sqrt() const;
     [[nodiscard]] Tensor relu() const;
     [[nodiscard]] Tensor sum()  const;
+    [[nodiscard]] Tensor mean() const;
 
     // ── View operations (differentiable) ────────────────────────────────────
     // Each is an Operation subclass so gradients flow through them.
@@ -227,9 +228,9 @@ private:
            Backend*                 backend);
 
     // Topological DFS for backward traversal. Defined in tensor.cpp.
-    static void topo_dfs(const Tensor&                    t,
-                         std::unordered_set<Operation*>&  visited,
-                         std::vector<Tensor>&             order);
+    static void topo_dfs(const Tensor&                         t,
+                         std::unordered_set<ops::Operation*>&  visited,
+                         std::vector<Tensor>&                  order);
 
     std::shared_ptr<Buffer>  buffer_;
     std::vector<std::size_t> shape_;
@@ -256,11 +257,11 @@ private:
     // Non-null for computed tensors; null for leaves and after graph cleanup.
     // Use is_leaf_ to distinguish "true leaf" from "cleaned computed tensor".
     // mutable: backward cleanup nulls it out on const Tensor refs inside saved_inputs_.
-    mutable std::shared_ptr<Operation>       grad_op_;
+    mutable std::shared_ptr<ops::Operation>  grad_op_;
 
     // Operation::execute() sets autograd fields (is_leaf_, requires_grad_,
     // grad_accum_, grad_op_) on output tensors directly via friend access.
-    friend class Operation;
+    friend class ops::Operation;
 };
 
 

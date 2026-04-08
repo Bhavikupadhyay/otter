@@ -2,7 +2,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // MulOperation — element-wise multiplication: out = a * b.
 //
@@ -28,4 +28,4 @@ protected:
         const std::vector<Tensor>& inputs) override;
 };
 
-} // namespace otter
+} // namespace otter::ops

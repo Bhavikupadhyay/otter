@@ -2,7 +2,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // SubOperation — element-wise subtraction: out = a - b.
 //
@@ -25,4 +25,4 @@ protected:
         const std::vector<Tensor>& inputs) override;
 };
 
-} // namespace otter
+} // namespace otter::ops

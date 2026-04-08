@@ -6,7 +6,7 @@
 #include "otter/detail/broadcast.h"
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> BroadcastOp::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "BroadcastOp: takes exactly one input");
@@ -39,4 +39,4 @@ std::vector<Tensor> BroadcastOp::backward(const std::vector<Tensor>& grad_output
     return {grad_input};
 }
 
-} // namespace otter
+} // namespace otter::ops

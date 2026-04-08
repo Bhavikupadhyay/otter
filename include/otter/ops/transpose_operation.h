@@ -5,7 +5,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // TransposeOperation — swaps two dimensions without moving data.
 //
@@ -33,4 +33,4 @@ private:
     std::size_t dim1_;
 };
 
-} // namespace otter
+} // namespace otter::ops

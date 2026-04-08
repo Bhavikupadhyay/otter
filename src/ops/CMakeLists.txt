@@ -14,5 +14,6 @@ target_sources(otter_core PRIVATE
     reshape_operation.cpp
     slice_operation.cpp
     sum_operation.cpp
+    mean_operation.cpp
     transpose_operation.cpp
 )

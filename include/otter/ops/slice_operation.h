@@ -5,7 +5,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // SliceOperation — extracts a contiguous sub-range along one dimension.
 //
@@ -34,4 +34,4 @@ private:
     std::size_t length_;
 };
 
-} // namespace otter
+} // namespace otter::ops

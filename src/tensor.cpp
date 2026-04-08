@@ -16,6 +16,7 @@
 #include "otter/ops/exp_operation.h"
 #include "otter/ops/log_operation.h"
 #include "otter/ops/matmul_operation.h"
+#include "otter/ops/mean_operation.h"
 #include "otter/ops/mul_operation.h"
 #include "otter/ops/neg_operation.h"
 #include "otter/ops/relu_operation.h"
@@ -229,63 +230,67 @@ void Tensor::accumulate_grad(const Tensor& incoming) const {
 // ── Tensor operations ─────────────────────────────────────────────────────────
 
 Tensor Tensor::add(const Tensor& other) const {
-    return std::make_shared<AddOperation>()->execute({*this, other})[0];
+    return std::make_shared<ops::AddOperation>()->execute({*this, other})[0];
 }
 
 Tensor Tensor::sub(const Tensor& other) const {
-    return std::make_shared<SubOperation>()->execute({*this, other})[0];
+    return std::make_shared<ops::SubOperation>()->execute({*this, other})[0];
 }
 
 Tensor Tensor::mul(const Tensor& other) const {
-    return std::make_shared<MulOperation>()->execute({*this, other})[0];
+    return std::make_shared<ops::MulOperation>()->execute({*this, other})[0];
 }
 
 Tensor Tensor::div(const Tensor& other) const {
-    return std::make_shared<DivOperation>()->execute({*this, other})[0];
+    return std::make_shared<ops::DivOperation>()->execute({*this, other})[0];
 }
 
 Tensor Tensor::neg() const {
-    return std::make_shared<NegOperation>()->execute({*this})[0];
+    return std::make_shared<ops::NegOperation>()->execute({*this})[0];
 }
 
 Tensor Tensor::exp() const {
-    return std::make_shared<ExpOperation>()->execute({*this})[0];
+    return std::make_shared<ops::ExpOperation>()->execute({*this})[0];
 }
 
 Tensor Tensor::log() const {
-    return std::make_shared<LogOperation>()->execute({*this})[0];
+    return std::make_shared<ops::LogOperation>()->execute({*this})[0];
 }
 
 Tensor Tensor::sqrt() const {
-    return std::make_shared<SqrtOperation>()->execute({*this})[0];
+    return std::make_shared<ops::SqrtOperation>()->execute({*this})[0];
 }
 
 Tensor Tensor::relu() const {
-    return std::make_shared<ReluOperation>()->execute({*this})[0];
+    return std::make_shared<ops::ReluOperation>()->execute({*this})[0];
 }
 
 Tensor Tensor::matmul(const Tensor& other) const {
-    return std::make_shared<MatMulOperation>()->execute({*this, other})[0];
+    return std::make_shared<ops::MatMulOperation>()->execute({*this, other})[0];
 }
 
 Tensor Tensor::reshape(std::vector<std::size_t> new_shape) const {
-    return std::make_shared<ReshapeOperation>(std::move(new_shape))->execute({*this})[0];
+    return std::make_shared<ops::ReshapeOperation>(std::move(new_shape))->execute({*this})[0];
 }
 
 Tensor Tensor::transpose(std::size_t dim0, std::size_t dim1) const {
-    return std::make_shared<TransposeOperation>(dim0, dim1)->execute({*this})[0];
+    return std::make_shared<ops::TransposeOperation>(dim0, dim1)->execute({*this})[0];
 }
 
 Tensor Tensor::slice(std::size_t dim, std::size_t start, std::size_t length) const {
-    return std::make_shared<SliceOperation>(dim, start, length)->execute({*this})[0];
+    return std::make_shared<ops::SliceOperation>(dim, start, length)->execute({*this})[0];
 }
 
 Tensor Tensor::broadcast_to(std::vector<std::size_t> target_shape) const {
-    return std::make_shared<BroadcastOp>(std::move(target_shape))->execute({*this})[0];
+    return std::make_shared<ops::BroadcastOp>(std::move(target_shape))->execute({*this})[0];
 }
 
 Tensor Tensor::sum() const {
-    return std::make_shared<SumOperation>()->execute({*this})[0];
+    return std::make_shared<ops::SumOperation>()->execute({*this})[0];
+}
+
+Tensor Tensor::mean() const {
+    return std::make_shared<ops::MeanOperation>()->execute({*this})[0];
 }
 
 // ── Debug output ──────────────────────────────────────────────────────────────
@@ -351,15 +356,15 @@ void Tensor::print(const std::string& label) const {
 
 // ── Topological DFS (static — accesses private autograd fields) ───────────────
 
-void Tensor::topo_dfs(const Tensor&                   t,
-                      std::unordered_set<Operation*>& visited,
-                      std::vector<Tensor>&             order)
+void Tensor::topo_dfs(const Tensor&                        t,
+                      std::unordered_set<ops::Operation*>& visited,
+                      std::vector<Tensor>&                  order)
 {
     // Stop at leaves (user-created tensors) and at nodes whose grad_op_ was
     // cleared by a previous backward pass. is_leaf_ distinguishes the two states:
     // "true leaf" vs "computed tensor after cleanup" (both have grad_op_==nullptr).
     if (t.is_leaf_ || !t.grad_op_) return;
-    Operation* op = t.grad_op_.get();
+    ops::Operation* op = t.grad_op_.get();
     if (visited.count(op)) return;
     visited.insert(op);
     for (const Tensor& inp : t.grad_op_->inputs())
@@ -390,8 +395,8 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
         throw std::runtime_error("backward: called on undefined Tensor");
 
     // ── 1. Build topological order (DFS post-order → reverse = loss first) ───
-    std::vector<Tensor>            order;
-    std::unordered_set<Operation*> visited;
+    std::vector<Tensor>                 order;
+    std::unordered_set<ops::Operation*> visited;
     topo_dfs(*this, visited, order);
     std::reverse(order.begin(), order.end());
 

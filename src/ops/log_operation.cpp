@@ -6,7 +6,7 @@
 #include "otter/autograd/no_grad_guard.h"
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> LogOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "LogOperation: requires exactly 1 input");
@@ -33,4 +33,4 @@ std::vector<Tensor> LogOperation::backward(const std::vector<Tensor>& grad_outpu
     return {result};
 }
 
-} // namespace otter
+} // namespace otter::ops

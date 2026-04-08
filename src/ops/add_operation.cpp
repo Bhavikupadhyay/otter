@@ -5,7 +5,7 @@
 
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> AddOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 2 && "AddOperation: requires exactly 2 inputs");
@@ -24,4 +24,4 @@ std::vector<Tensor> AddOperation::backward(const std::vector<Tensor>& grad_outpu
     return {grad_outputs[0], grad_outputs[0]};
 }
 
-} // namespace otter
+} // namespace otter::ops

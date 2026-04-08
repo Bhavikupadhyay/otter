@@ -13,6 +13,7 @@ void run_matmul_tests();
 void run_views_tests();
 void run_math_ops_tests();
 void run_factories_debug_tests();
+void run_mean_tests();
 } // namespace otter::test
 
 int main() {
@@ -26,6 +27,7 @@ int main() {
     otter::test::run_views_tests();
     otter::test::run_math_ops_tests();
     otter::test::run_factories_debug_tests();
+    otter::test::run_mean_tests();
 
     std::cout << "\n"
               << otter::test::tests_passed << " / "

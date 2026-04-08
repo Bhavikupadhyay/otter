@@ -5,7 +5,7 @@
 
 #include "otter/ops/operation.h"
 
-namespace otter {
+namespace otter::ops {
 
 // ReshapeOperation — changes shape without moving data.
 //
@@ -32,4 +32,4 @@ private:
     std::vector<std::size_t> target_shape_;
 };
 
-} // namespace otter
+} // namespace otter::ops

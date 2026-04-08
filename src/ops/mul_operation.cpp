@@ -5,7 +5,7 @@
 #include "otter/autograd/no_grad_guard.h"
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> MulOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 2 && "MulOperation: requires exactly 2 inputs");
@@ -38,4 +38,4 @@ std::vector<Tensor> MulOperation::backward(const std::vector<Tensor>& grad_outpu
     return {grad_a, grad_b};
 }
 
-} // namespace otter
+} // namespace otter::ops

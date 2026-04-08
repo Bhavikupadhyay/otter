@@ -6,7 +6,7 @@
 #include "otter/autograd/no_grad_guard.h"
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> NegOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "NegOperation: requires exactly 1 input");
@@ -29,4 +29,4 @@ std::vector<Tensor> NegOperation::backward(const std::vector<Tensor>& grad_outpu
     return {neg_grad};
 }
 
-} // namespace otter
+} // namespace otter::ops

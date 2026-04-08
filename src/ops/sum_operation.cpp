@@ -5,7 +5,7 @@
 
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 std::vector<Tensor> SumOperation::forward(const std::vector<Tensor>& inputs) {
     assert(inputs.size() == 1 && "SumOperation: requires exactly 1 input");
@@ -37,4 +37,4 @@ std::vector<Tensor> SumOperation::backward(const std::vector<Tensor>& grad_outpu
     return {grad_input};
 }
 
-} // namespace otter
+} // namespace otter::ops

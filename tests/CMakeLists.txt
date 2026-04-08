@@ -10,6 +10,7 @@ add_executable(otter_tests
     test_views.cpp
     test_math_ops.cpp
     test_factories_debug.cpp
+    test_mean.cpp
 )
 
 target_link_libraries(otter_tests PRIVATE otter_core)

@@ -7,7 +7,7 @@
 #include "otter/detail/broadcast.h"
 #include "otter/kernel/kernel_engine.h"
 
-namespace otter {
+namespace otter::ops {
 
 // ── Helper: stride-swap transpose of last two dims ────────────────────────────
 //
@@ -152,4 +152,4 @@ std::vector<Tensor> MatMulOperation::backward(const std::vector<Tensor>& grad_ou
     return {grad_a, grad_b};
 }
 
-} // namespace otter
+} // namespace otter::ops
