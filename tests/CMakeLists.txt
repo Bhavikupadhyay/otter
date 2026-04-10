@@ -17,6 +17,7 @@ add_executable(otter_tests
     test_thread_safety.cpp
 )
 
+
 target_link_libraries(otter_tests PRIVATE otter_core Threads::Threads)
 
 target_include_directories(otter_tests PRIVATE
