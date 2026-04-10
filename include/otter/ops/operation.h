@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -62,9 +63,41 @@ public:
     // to reuse the forward output (e.g. ExpOperation, SqrtOperation).
     [[nodiscard]] const std::vector<Tensor>& outputs() const noexcept { return saved_outputs_; }
 
+    // Thread-safe snapshot of saved inputs — returns a by-value copy under saved_mtx_.
+    //
+    // Used by Tensor::backward() Phase 4 instead of inputs() (which returns const&).
+    // If clear_saved() runs on another thread between when we snapshot and when we call
+    // op->backward(), the snapshot copy is still valid; our backward() call simply
+    // uses the saved inputs captured before cleanup.
+    //
+    // inputs() (returning const&) is kept for topo_dfs(), which runs in Phase 1 before
+    // any Phase 5 cleanup — no race exists there and the by-value overhead is unnecessary.
+    [[nodiscard]] std::vector<Tensor> snapshot_inputs() const {
+        std::lock_guard<std::mutex> lock(saved_mtx_);
+        return saved_inputs_;
+    }
+
     // Drop saved input and output references — releases Buffer refcounts.
-    // Called by Tensor::backward() after the gradient has been propagated (retain_graph=false).
-    void clear_saved() noexcept { saved_inputs_.clear(); saved_outputs_.clear(); }
+    // Called by Tensor::backward() after all gradients are accumulated (retain_graph=false).
+    //
+    // Before clearing saved_inputs_, we explicitly reset grad_op_ on each saved Tensor
+    // copy. This breaks the reference chain:
+    //   Operation → saved_inputs_[i] (Tensor copy) → grad_op_ → (another Operation)
+    // Without this reset, each Tensor copy in saved_inputs_ would hold a shared_ptr to
+    // the next Operation in the graph, keeping the entire chain alive until all
+    // saved_inputs_ vectors destruct. Explicit reset frees Operations as soon as they
+    // are no longer reachable from any Tensor the caller holds.
+    //
+    // Acquires saved_mtx_ to protect against concurrent snapshot_inputs() calls on
+    // another thread (e.g. two backward passes sharing an intermediate Operation).
+    //
+    // ops::Operation is a friend of Tensor (tensor.h), so t.grad_op_.reset() is valid.
+    void clear_saved() noexcept {
+        std::lock_guard<std::mutex> lock(saved_mtx_);
+        for (auto& t : saved_inputs_) t.grad_op_.reset();
+        saved_inputs_.clear();
+        saved_outputs_.clear();
+    }
 
     // ── Backward pass — implemented by each concrete op ───────────────────────
     //
@@ -105,6 +138,11 @@ protected:
     // output value (exp: grad * out; sqrt: grad / (2 * out)).
     // These are the plain output tensors before grad_op_ wiring.
     mutable std::vector<Tensor> saved_outputs_;
+
+    // Protects saved_inputs_ and saved_outputs_ against concurrent snapshot_inputs()
+    // and clear_saved() calls (e.g. two backward passes traversing a shared Operation).
+    // mutable: clear_saved() is called on const Operation refs from the backward traversal.
+    mutable std::mutex saved_mtx_;
 };
 
 } // namespace otter::ops

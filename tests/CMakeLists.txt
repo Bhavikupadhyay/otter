@@ -1,3 +1,5 @@
+find_package(Threads REQUIRED)
+
 add_executable(otter_tests
     main.cpp
     test_memory.cpp
@@ -12,9 +14,10 @@ add_executable(otter_tests
     test_factories_debug.cpp
     test_mean.cpp
     test_optim.cpp
+    test_thread_safety.cpp
 )
 
-target_link_libraries(otter_tests PRIVATE otter_core)
+target_link_libraries(otter_tests PRIVATE otter_core Threads::Threads)
 
 target_include_directories(otter_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

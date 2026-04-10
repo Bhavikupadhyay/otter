@@ -250,6 +250,51 @@ void test_add_mul_chain_backward() {
 
 // ── Run all ───────────────────────────────────────────────────────────────────
 
+// ── zero_grad + backward accumulates fresh (not doubled) ─────────────────────
+
+void test_accumulate_grad_fresh_after_zero_grad() {
+    std::cout << "[Autograd 17] zero_grad then backward: grad accumulates fresh, not doubled\n";
+    Backend& be = cpu_backend();
+    Tensor a = Tensor::from_data<double>({1, 2, 3}, {3}, be, /*requires_grad=*/true);
+
+    // First backward: grad_a should be [1, 1, 1]
+    a.sum().backward();
+    CHECK(a.grad().defined());
+    CHECK_NEAR(a.grad().at({0}), 1.0, 1e-12);
+    CHECK_NEAR(a.grad().at({1}), 1.0, 1e-12);
+    CHECK_NEAR(a.grad().at({2}), 1.0, 1e-12);
+
+    // zero_grad clears the accumulator
+    a.zero_grad();
+    CHECK(!a.grad().defined());
+
+    // Second backward: grad should be [1, 1, 1] again, not [2, 2, 2]
+    a.sum().backward();
+    CHECK_NEAR(a.grad().at({0}), 1.0, 1e-12);
+    CHECK_NEAR(a.grad().at({1}), 1.0, 1e-12);
+    CHECK_NEAR(a.grad().at({2}), 1.0, 1e-12);
+}
+
+// ── backward releases saved_inputs — bytes_allocated drops to zero ────────────
+
+void test_backward_releases_saved_inputs() {
+    std::cout << "[Autograd 18] backward(retain_graph=false): saved_inputs cleared, memory freed\n";
+    Backend& be = cpu_backend();
+    {
+        // Build a chain: a -> add -> mul -> sum -> backward
+        // After backward(), all saved_inputs_ on intermediate ops must be cleared.
+        // If cycles are properly broken, bytes_allocated drops to 0 once all
+        // user Tensors go out of scope.
+        Tensor a = Tensor::from_data<double>({1, 2, 3}, {3}, be, /*requires_grad=*/true);
+        Tensor b = Tensor::from_data<double>({4, 5, 6}, {3}, be, /*requires_grad=*/true);
+        Tensor c = a.add(b);   // AddOperation saved inputs: a, b
+        Tensor d = c.mul(b);   // MulOperation saved inputs: c, b
+        d.sum().backward();    // SumOperation, then cleanup
+        // After backward, all saved_inputs_ cleared; all ops freed
+    }
+    CHECK(be.memory_manager()->bytes_allocated() == 0);
+}
+
 void run_autograd_tests() {
     test_add_forward_values();
     test_add_output_not_leaf();
@@ -267,6 +312,8 @@ void run_autograd_tests() {
     test_mul_forward_values();
     test_mul_backward_gradients();
     test_add_mul_chain_backward();
+    test_accumulate_grad_fresh_after_zero_grad();
+    test_backward_releases_saved_inputs();
 }
 
 } // namespace otter::test

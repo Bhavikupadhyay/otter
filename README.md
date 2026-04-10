@@ -88,6 +88,24 @@ Parameters are passed by value. The optimizer shares the same `Buffer` as the ca
 
 ---
 
+## Thread safety
+
+`grad()`, `zero_grad()`, and `accumulate_grad()` are mutex-protected via
+`GradAccumulator::mtx`. Concurrent reads and writes on the same leaf's gradient
+are safe from any thread.
+
+Concurrent `backward()` calls on separate computation graphs that share a leaf
+weight are safe. Each thread builds its own forward graph; only the leaf's
+`GradAccumulator` is shared. The canonical data-parallel pattern — N threads
+each computing loss and calling `backward()`, one shared weight tensor — works
+without external synchronization.
+
+`SGD::step()` is not safe for concurrent calls on the same optimizer. `dispatch_scale`
+and `dispatch_axpy` write directly into parameter and velocity buffers. Call `step()`
+from one thread after all backward passes have joined.
+
+---
+
 ## Architecture
 
 `Tensor` is a value type. Copies share one `Buffer` via `shared_ptr` with independent shape, stride, and offset metadata. Views are zero-copy; `contiguous()` copies only when the strides are non-standard.

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -149,6 +150,14 @@ public:
     // Prints shape, dtype, and values to stdout. label is optional.
     void print(const std::string& label = "") const;
 
+    // ── Buffer ownership query ────────────────────────────────────────────────
+    // Returns true iff this Tensor is the sole holder of its Buffer (use_count==1).
+    // Kernel code checks this before any in-place write that must not corrupt other
+    // views sharing the same allocation. Also used to guard fill_() pre-conditions.
+    [[nodiscard]] bool is_unique() const noexcept {
+        return buffer_ && buffer_.use_count() == 1;
+    }
+
     // ── In-place fill ────────────────────────────────────────────────────────
     // Writes value to every element. Requires: (1) contiguous, (2) uniquely
     // owned buffer (use_count == 1). Both conditions hold for freshly allocated
@@ -275,7 +284,10 @@ private:
 // Zero runtime overhead when requires_grad is false (grad_accum_ stays null).
 
 struct GradAccumulator {
-    Tensor grad_tensor;  // undefined (default-constructed) until first accumulate_grad()
+    Tensor             grad_tensor;  // undefined (default-constructed) until first accumulate_grad()
+    mutable std::mutex mtx;         // protects grad_tensor; mutable so accumulate_grad() (const) can lock
+    // std::mutex is non-copyable/non-movable, which is correct: GradAccumulator is only
+    // ever held via shared_ptr and never copied or moved directly.
 };
 
 

@@ -196,7 +196,8 @@ void Tensor::fill_(double value) {
 
 Tensor Tensor::grad() const noexcept {
     if (!grad_accum_) return Tensor{};
-    return grad_accum_->grad_tensor;
+    std::lock_guard<std::mutex> lock(grad_accum_->mtx);
+    return grad_accum_->grad_tensor;  // returns by value; lock releases before caller uses the copy
 }
 
 Tensor Tensor::detach() const noexcept {
@@ -210,12 +211,22 @@ Tensor Tensor::detach() const noexcept {
 }
 
 void Tensor::zero_grad() noexcept {
-    if (grad_accum_) grad_accum_->grad_tensor = Tensor{};
+    if (!grad_accum_) return;
+    std::lock_guard<std::mutex> lock(grad_accum_->mtx);
+    grad_accum_->grad_tensor = Tensor{};
 }
 
 void Tensor::accumulate_grad(const Tensor& incoming) const {
     assert(requires_grad_ && "accumulate_grad called on tensor that does not require grad");
+    // Lazy allocation happens before the lock: grad_accum_ is a shared_ptr on *this*
+    // Tensor, not shared state, so this write is safe without the GradAccumulator mutex.
     if (!grad_accum_) grad_accum_ = std::make_shared<GradAccumulator>();
+
+    // Lock the GradAccumulator before the read-modify-write on grad_tensor.
+    // Multiple threads may call accumulate_grad on different Tensor copies that
+    // share the same GradAccumulator (e.g. parallel backward passes on leaf inputs).
+    std::lock_guard<std::mutex> lock(grad_accum_->mtx);
+
     if (!grad_accum_->grad_tensor.defined()) {
         grad_accum_->grad_tensor = Tensor::zeros(shape_, *backend_, dtype_);
     }
@@ -405,42 +416,73 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
     // still hold gradients from the previous pass. Clear them so each backward
     // starts fresh for intermediates. Leaf gradients are NOT cleared here —
     // they accumulate across multiple backward calls (the expected behaviour).
+    // Lock each node's accumulator: a concurrent grad() call must not see a
+    // partial write (e.g. a grad_tensor mid-assignment).
     for (const Tensor& node : order) {
-        if (!node.is_leaf_ && node.grad_accum_)
+        if (!node.is_leaf_ && node.grad_accum_) {
+            std::lock_guard<std::mutex> lock(node.grad_accum_->mtx);
             node.grad_accum_->grad_tensor = Tensor{};
+        }
     }
 
     // ── 3. Seed this tensor's gradient ───────────────────────────────────────
     // Assign (not accumulate) the seed. After clearing intermediates above,
     // this tensor's grad_accum_ is empty; assigning directly is equivalent
     // to a fresh start for this node's gradient.
+    // Lock: a concurrent grad() call must not observe a half-written seed.
     if (!grad_accum_) grad_accum_ = std::make_shared<GradAccumulator>();
-    grad_accum_->grad_tensor = std::move(seed);
+    {
+        std::lock_guard<std::mutex> lock(grad_accum_->mtx);
+        grad_accum_->grad_tensor = std::move(seed);
+    }
 
-    // ── 4. Traverse in reverse topo order ─────────────────────────────────────
+    // ── 4. Backward traversal — compute gradients, no graph mutation ─────────
+    // Mutation (clear_saved) is deferred to a separate cleanup pass below.
+    // This decouples gradient computation (read-only) from graph mutation (write),
+    // which is a prerequisite for future parallel backward passes.
     for (const Tensor& node : order) {
         if (!node.grad_op_) continue;
-        if (!node.grad_accum_ || !node.grad_accum_->grad_tensor.defined()) continue;
 
-        const Tensor& node_grad = node.grad_accum_->grad_tensor;
+        // Copy the node's gradient under the accumulator lock, then release
+        // before calling backward(). Prevents a concurrent accumulate_grad()
+        // or zero_grad() from racing with our read of grad_tensor.
+        Tensor node_grad;
+        {
+            if (!node.grad_accum_) continue;
+            std::lock_guard<std::mutex> lock(node.grad_accum_->mtx);
+            if (!node.grad_accum_->grad_tensor.defined()) continue;
+            node_grad = node.grad_accum_->grad_tensor;  // by-value copy under lock
+        }
+        // Lock released. node_grad is a private copy — safe to pass to backward.
+
+        // Snapshot saved inputs under saved_mtx_ before calling backward().
+        // If clear_saved() runs on another thread (shared-graph scenario), our
+        // snapshot remains valid; the backward() call uses captured inputs.
+        const std::vector<Tensor> saved = node.grad_op_->snapshot_inputs();
+        if (saved.empty()) continue;  // graph was cleared by another backward pass
 
         // Run the operation's backward pass.
         auto input_grads = node.grad_op_->backward({node_grad});
 
         // Accumulate each input gradient into the corresponding saved input.
-        const auto& saved = node.grad_op_->inputs();
         for (std::size_t i = 0; i < saved.size() && i < input_grads.size(); ++i) {
             if (saved[i].requires_grad() && input_grads[i].defined())
                 saved[i].accumulate_grad(input_grads[i]);
         }
-
-        // ── 4. Graph cleanup (unless retain_graph) ────────────────────────────
-        if (!retain_graph) node.grad_op_->clear_saved();
     }
 
-    // Null out this node's grad_op_ after cleanup so a second backward() throws
-    // rather than silently double-counting gradients.
-    if (!retain_graph) grad_op_ = nullptr;
+    // ── 5. Cleanup pass — release saved state after all grads are accumulated ─
+    // Separate from the traversal above so the backward loop is mutation-free.
+    // clear_saved() also resets grad_op_ on each saved input to break reference
+    // chains and allow Operations to be freed as soon as they are unreachable.
+    if (!retain_graph) {
+        for (const Tensor& node : order) {
+            if (node.grad_op_) node.grad_op_->clear_saved();
+        }
+        // Null out the root tensor's grad_op_ so a second backward() call throws
+        // a clear error instead of silently double-counting gradients.
+        grad_op_ = nullptr;
+    }
 }
 
 } // namespace otter
