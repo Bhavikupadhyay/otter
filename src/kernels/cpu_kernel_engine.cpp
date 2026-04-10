@@ -620,6 +620,10 @@ void CPUKernelEngine::cpu_matmul(const Tensor& a, const Tensor& b, Tensor& out) 
 //
 // Handles contiguous (fast raw-pointer loop) and strided (odometer) layouts.
 // No use_count assertion — shared buffer visibility is the intent.
+//
+// Single-threaded caller assumed. This kernel writes directly into dst's buffer
+// with no lock. Concurrent calls on the same tensor are a data race.
+// SGD::step() is the only caller; invoke it from one thread at a time.
 
 void CPUKernelEngine::cpu_scale(Tensor& dst, double alpha) const {
     const std::size_t n    = dst.numel();
@@ -648,6 +652,9 @@ void CPUKernelEngine::cpu_scale(Tensor& dst, double alpha) const {
 //
 // Precondition: dst.shape() == src.shape() (no broadcasting).
 // Both may have arbitrary strides. Fast path when both are contiguous.
+//
+// Single-threaded caller assumed. Writes directly into dst's buffer with no
+// lock. Concurrent calls on the same dst are a data race.
 
 void CPUKernelEngine::cpu_axpy(Tensor& dst, double alpha, const Tensor& src) const {
     assert(dst.shape() == src.shape() &&

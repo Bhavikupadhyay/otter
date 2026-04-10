@@ -21,6 +21,12 @@ CPUMemoryManager::CPUMemoryManager(std::size_t min_seg)
 }
 
 CPUMemoryManager::~CPUMemoryManager() noexcept {
+    // Lock for the same reason allocate()/free() lock: if a Backend is ever
+    // heap-allocated and destroyed concurrently with a final Buffer::~Buffer()
+    // calling free(), the destructor must not race on active_ or free_pool_.
+    // For the current singleton pattern this is defensive, but correct.
+    std::lock_guard<std::mutex> lock(mutex_);
+
     // In debug builds, a non-empty active_ means the caller has live
     // Buffers that outlive the allocator — a lifetime contract violation.
     assert(active_.empty() &&

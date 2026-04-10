@@ -139,6 +139,45 @@ void test_no_grad_guard_nested_safe() {
     CHECK(NoGradGuard::grad_mode());
 }
 
+// ── Tensor::is_unique ────────────────────────────────────────────────────────
+
+void test_is_unique_single_tensor() {
+    std::cout << "[Tensor 11] is_unique: freshly allocated tensor is sole buffer holder\n";
+    Backend& be = cpu_backend();
+    Tensor t = Tensor::zeros({4}, be);
+    CHECK(t.is_unique());
+}
+
+void test_is_unique_false_after_copy() {
+    std::cout << "[Tensor 12] is_unique: copy shares buffer — both return false\n";
+    Backend& be = cpu_backend();
+    Tensor t = Tensor::zeros({4}, be);
+    Tensor u = t;  // value-type copy shares the same Buffer
+    CHECK(!t.is_unique());
+    CHECK(!u.is_unique());
+}
+
+void test_is_unique_restored_when_copy_destroyed() {
+    std::cout << "[Tensor 13] is_unique: true again after the only other holder is destroyed\n";
+    Backend& be = cpu_backend();
+    Tensor t = Tensor::zeros({4}, be);
+    {
+        Tensor u = t;
+        CHECK(!t.is_unique());  // two holders inside the block
+    }
+    CHECK(t.is_unique());  // u is gone; t is the sole holder again
+}
+
+void test_is_unique_false_for_view() {
+    std::cout << "[Tensor 14] is_unique: reshape view shares buffer — original returns false\n";
+    Backend& be = cpu_backend();
+    Tensor t = Tensor::zeros({2, 3}, be);
+    Tensor v = t.reshape({6});
+    // Both share the same Buffer, so neither is unique.
+    CHECK(!t.is_unique());
+    CHECK(!v.is_unique());
+}
+
 // ── Run all ───────────────────────────────────────────────────────────────────
 
 void run_tensor_tests() {
@@ -152,6 +191,10 @@ void run_tensor_tests() {
     test_no_grad_guard_default_on();
     test_no_grad_guard_disables_and_restores();
     test_no_grad_guard_nested_safe();
+    test_is_unique_single_tensor();
+    test_is_unique_false_after_copy();
+    test_is_unique_restored_when_copy_destroyed();
+    test_is_unique_false_for_view();
 }
 
 } // namespace otter::test
