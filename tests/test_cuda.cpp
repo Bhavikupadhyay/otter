@@ -1,121 +1,695 @@
 #include "test_utils.h"
 
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 #include "otter/backends/cpu.h"
 #include "otter/backends/cuda.h"
+#include "otter/autograd/no_grad_guard.h"
 #include "otter/tensor.h"
+
+// Private header — accessible because tests/CMakeLists.txt adds PROJECT_SOURCE_DIR/src.
+// Only used for the stream raw-handle test.
+#include "backends/cuda_stream.h"
 
 namespace otter::test {
 
-void run_cuda_tests() {
-    // ── Test 1: cuda_backend() returns a valid backend on Device::CUDA ────────
-    {
-        std::cout << "[CUDA Test 1] cuda_backend() device is Device::CUDA\n";
-        Backend& b = cuda_backend();
-        CHECK(b.device() == Device::CUDA);
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: try a call, return true if it threw std::runtime_error whose
+// what() contains `fragment`.
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // ── Test 2: Tensor::zeros allocates without throwing ──────────────────────
-    {
-        std::cout << "[CUDA Test 2] Tensor::zeros on CUDA backend allocates\n";
-        Tensor t = Tensor::zeros({4}, cuda_backend());
-        CHECK(t.defined());
-        CHECK(t.numel() == 4);
-    }
+namespace {
 
-    // ── Test 3: bytes_allocated increments and returns to 0 after destruct ────
-    {
-        std::cout << "[CUDA Test 3] bytes_allocated() tracks live allocation\n";
-        const std::size_t before = cuda_backend().memory_manager()->bytes_allocated();
-        {
-            Tensor t = Tensor::zeros({4}, cuda_backend());
-            CHECK(cuda_backend().memory_manager()->bytes_allocated() > before);
-        }
-        CHECK(cuda_backend().memory_manager()->bytes_allocated() == before);
+template<typename F>
+bool throws_with(F&& f, const char* fragment, std::string& out_msg) {
+    try { f(); return false; }
+    catch (const std::runtime_error& e) {
+        out_msg = e.what();
+        return std::string(e.what()).find(fragment) != std::string::npos;
     }
+    catch (...) { return false; }
+}
 
-    // ── Test 4: from_data reads back correctly via at() ───────────────────────
+} // namespace
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// A — Memory / allocator
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_A1_bytes_allocated_starts_at_zero() {
+    std::cout << "[CUDA A1] bytes_allocated is 0 when no tensors are live\n";
+    // After all previous (A*) tests have run, all temps are out of scope.
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == 0);
+}
+
+void test_cuda_A2_allocate_increments_free_decrements() {
+    std::cout << "[CUDA A2] allocate increments bytes_allocated; free returns it to 0\n";
+    const std::size_t before = cuda_backend().memory_manager()->bytes_allocated();
     {
-        std::cout << "[CUDA Test 4] from_data reads back correctly via at()\n";
-        Tensor t = Tensor::from_data<double>({1.0, 2.0, 3.0, 4.0}, {4}, cuda_backend());
-        CHECK_NEAR(t.at({0}), 1.0, 1e-10);
-        CHECK_NEAR(t.at({1}), 2.0, 1e-10);
-        CHECK_NEAR(t.at({2}), 3.0, 1e-10);
-        CHECK_NEAR(t.at({3}), 4.0, 1e-10);
+        Tensor t = Tensor::zeros({16}, cuda_backend());
+        CHECK(cuda_backend().memory_manager()->bytes_allocated() > before);
     }
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == before);
+}
 
-    // ── Test 5: fill_() writes and reads back correctly ───────────────────────
+void test_cuda_A3_multiple_tensors_accumulate_and_release() {
+    std::cout << "[CUDA A3] multiple tensors accumulate bytes; all released on destruct\n";
+    const std::size_t start = cuda_backend().memory_manager()->bytes_allocated();
     {
-        std::cout << "[CUDA Test 5] fill_() writes via kernel; at() reads back\n";
-        Tensor t = Tensor::zeros({8}, cuda_backend());
-        t.fill_(3.14);
-        for (std::size_t i = 0; i < 8; ++i)
-            CHECK_NEAR(t.at({i}), 3.14, 1e-10);
+        Tensor a = Tensor::zeros({4},  cuda_backend());
+        Tensor b = Tensor::zeros({8},  cuda_backend());
+        Tensor c = Tensor::zeros({16}, cuda_backend());
+        // At minimum 4+8+16 = 28 doubles = 224 bytes extra
+        CHECK(cuda_backend().memory_manager()->bytes_allocated()
+              >= start + 28 * sizeof(double));
     }
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == start);
+}
 
-    // ── Test 6: default_stream() returns non-null ──────────────────────────────
-    {
-        std::cout << "[CUDA Test 6] default_stream() is non-null\n";
-        CHECK(cuda_backend().default_stream() != nullptr);
-    }
+void test_cuda_A4_release_cache_does_not_crash() {
+    std::cout << "[CUDA A4] release_cache() (== cudaDeviceSynchronize) does not crash\n";
+    cuda_backend().memory_manager()->release_cache();
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == 0);
+}
 
-    // ── Test 7: to(Device::CPU) reads back correct values ─────────────────────
-    {
-        std::cout << "[CUDA Test 7] to(Device::CPU) transfers values to host\n";
-        Tensor t = Tensor::from_data<double>({5.0, 6.0, 7.0, 8.0}, {4}, cuda_backend());
-        Tensor h = t.to(Device::CPU);
-        CHECK(h.backend().device() == Device::CPU);
-        CHECK_NEAR(h.at({0}), 5.0, 1e-10);
-        CHECK_NEAR(h.at({1}), 6.0, 1e-10);
-        CHECK_NEAR(h.at({2}), 7.0, 1e-10);
-        CHECK_NEAR(h.at({3}), 8.0, 1e-10);
-    }
+void test_cuda_A5_bytes_reserved_equals_allocated() {
+    std::cout << "[CUDA A5] bytes_reserved() == bytes_allocated() — no pool overhead\n";
+    Tensor t = Tensor::zeros({32}, cuda_backend());
+    CHECK(cuda_backend().memory_manager()->bytes_reserved() ==
+          cuda_backend().memory_manager()->bytes_allocated());
+}
 
-    // ── Test 8: cpu() convenience method ──────────────────────────────────────
-    {
-        std::cout << "[CUDA Test 8] cpu() convenience method\n";
-        Tensor t = Tensor::zeros({3}, cuda_backend());
-        t.fill_(9.0);
-        Tensor h = t.cpu();
-        CHECK(h.backend().device() == Device::CPU);
-        CHECK_NEAR(h.at({0}), 9.0, 1e-10);
-        CHECK_NEAR(h.at({2}), 9.0, 1e-10);
-    }
 
-    // ── Test 9: cuda() on a CPU tensor produces a CUDA tensor ─────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// B — Tensor creation
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_B1_zeros_all_zero() {
+    std::cout << "[CUDA B1] zeros({4}) — all elements 0.0\n";
+    Tensor t = Tensor::zeros({4}, cuda_backend());
+    CHECK(t.defined());
+    CHECK(t.numel() == 4);
+    for (std::size_t i = 0; i < 4; ++i)
+        CHECK_NEAR(t.at({i}), 0.0, 1e-12);
+}
+
+void test_cuda_B2_ones_all_one() {
+    std::cout << "[CUDA B2] ones({4}) — all elements 1.0\n";
+    Tensor t = Tensor::ones({4}, cuda_backend());
+    for (std::size_t i = 0; i < 4; ++i)
+        CHECK_NEAR(t.at({i}), 1.0, 1e-12);
+}
+
+void test_cuda_B3_full_constant_value() {
+    std::cout << "[CUDA B3] full({4}, 7.5) — all elements 7.5\n";
+    Tensor t = Tensor::full({4}, 7.5, cuda_backend());
+    for (std::size_t i = 0; i < 4; ++i)
+        CHECK_NEAR(t.at({i}), 7.5, 1e-12);
+}
+
+void test_cuda_B4_from_data_1d() {
+    std::cout << "[CUDA B4] from_data 1D — values read back correctly\n";
+    Tensor t = Tensor::from_data<double>({1.1, 2.2, 3.3, 4.4}, {4}, cuda_backend());
+    CHECK_NEAR(t.at({0}), 1.1, 1e-10);
+    CHECK_NEAR(t.at({1}), 2.2, 1e-10);
+    CHECK_NEAR(t.at({2}), 3.3, 1e-10);
+    CHECK_NEAR(t.at({3}), 4.4, 1e-10);
+}
+
+void test_cuda_B5_from_data_2d() {
+    std::cout << "[CUDA B5] from_data 2D — stride-based at({r,c}) correct\n";
+    Tensor t = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    CHECK(t.shape() == (std::vector<std::size_t>{2, 3}));
+    CHECK_NEAR(t.at({0,0}), 1.0, 1e-12);
+    CHECK_NEAR(t.at({0,1}), 2.0, 1e-12);
+    CHECK_NEAR(t.at({0,2}), 3.0, 1e-12);
+    CHECK_NEAR(t.at({1,0}), 4.0, 1e-12);
+    CHECK_NEAR(t.at({1,1}), 5.0, 1e-12);
+    CHECK_NEAR(t.at({1,2}), 6.0, 1e-12);
+}
+
+void test_cuda_B6_zeros_like() {
+    std::cout << "[CUDA B6] zeros_like — same shape, all 0.0, on CUDA\n";
+    Tensor t = Tensor::from_data<double>({1,2,3,4}, {2,2}, cuda_backend());
+    Tensor z = Tensor::zeros_like(t);
+    CHECK(z.backend().device() == Device::CUDA);
+    CHECK(z.shape() == t.shape());
+    for (std::size_t r = 0; r < 2; ++r)
+        for (std::size_t c = 0; c < 2; ++c)
+            CHECK_NEAR(z.at({r, c}), 0.0, 1e-12);
+}
+
+void test_cuda_B7_ones_like() {
+    std::cout << "[CUDA B7] ones_like — same shape, all 1.0, on CUDA\n";
+    Tensor t = Tensor::zeros({3}, cuda_backend());
+    Tensor o = Tensor::ones_like(t);
+    CHECK(o.backend().device() == Device::CUDA);
+    for (std::size_t i = 0; i < 3; ++i)
+        CHECK_NEAR(o.at({i}), 1.0, 1e-12);
+}
+
+void test_cuda_B8_requires_grad_on_cuda() {
+    std::cout << "[CUDA B8] requires_grad=true on CUDA: flag set, is_leaf, grad undefined\n";
+    Tensor t = Tensor::zeros({4}, cuda_backend(), DType::Float64, /*requires_grad=*/true);
+    CHECK(t.requires_grad());
+    CHECK(t.is_leaf());
+    CHECK(!t.grad().defined());
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// C — fill_ and element access
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_C1_fill_basic() {
+    std::cout << "[CUDA C1] fill_(3.14) — kernel writes, at() reads back\n";
+    Tensor t = Tensor::zeros({8}, cuda_backend());
+    t.fill_(3.14);
+    for (std::size_t i = 0; i < 8; ++i)
+        CHECK_NEAR(t.at({i}), 3.14, 1e-10);
+}
+
+void test_cuda_C2_fill_negative() {
+    std::cout << "[CUDA C2] fill_(-2.5) — negative value written correctly\n";
+    Tensor t = Tensor::zeros({4}, cuda_backend());
+    t.fill_(-2.5);
+    for (std::size_t i = 0; i < 4; ++i)
+        CHECK_NEAR(t.at({i}), -2.5, 1e-12);
+}
+
+void test_cuda_C3_fill_zero_overwrites() {
+    std::cout << "[CUDA C3] fill_(0.0) overwrites non-zero content\n";
+    Tensor t = Tensor::full({4}, 9.9, cuda_backend());
+    t.fill_(0.0);
+    for (std::size_t i = 0; i < 4; ++i)
+        CHECK_NEAR(t.at({i}), 0.0, 1e-12);
+}
+
+void test_cuda_C4_fill_twice_second_wins() {
+    std::cout << "[CUDA C4] fill_ twice: second value wins\n";
+    Tensor t = Tensor::zeros({4}, cuda_backend());
+    t.fill_(1.0);
+    t.fill_(2.0);
+    for (std::size_t i = 0; i < 4; ++i)
+        CHECK_NEAR(t.at({i}), 2.0, 1e-12);
+}
+
+void test_cuda_C5_at_2d_stride_correct() {
+    std::cout << "[CUDA C5] at({r,c}) on 2D tensor: stride-based index correct\n";
+    // 3×4 tensor: value at logical [r][c] = r*10 + c
+    std::vector<double> vals;
+    for (std::size_t r = 0; r < 3; ++r)
+        for (std::size_t c = 0; c < 4; ++c)
+            vals.push_back(static_cast<double>(r * 10 + c));
+    Tensor t = Tensor::from_data<double>(vals, {3,4}, cuda_backend());
+    for (std::size_t r = 0; r < 3; ++r)
+        for (std::size_t c = 0; c < 4; ++c)
+            CHECK_NEAR(t.at({r, c}), static_cast<double>(r * 10 + c), 1e-12);
+}
+
+void test_cuda_C6_large_tensor_fill_and_spot_check() {
+    std::cout << "[CUDA C6] 1024-element fill + first/mid/last check\n";
+    constexpr std::size_t N = 1024;
+    Tensor t = Tensor::zeros({N}, cuda_backend());
+    t.fill_(6.28);
+    CHECK_NEAR(t.at({0}),     6.28, 1e-10);
+    CHECK_NEAR(t.at({N/2}),   6.28, 1e-10);
+    CHECK_NEAR(t.at({N - 1}), 6.28, 1e-10);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// D — to_vector() and print()
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_D1_to_vector_1d() {
+    std::cout << "[CUDA D1] to_vector<double>() on 1D CUDA tensor\n";
+    Tensor t = Tensor::from_data<double>({10.0, 20.0, 30.0}, {3}, cuda_backend());
+    auto v = t.to_vector<double>();
+    CHECK(v.size() == 3);
+    CHECK_NEAR(v[0], 10.0, 1e-12);
+    CHECK_NEAR(v[1], 20.0, 1e-12);
+    CHECK_NEAR(v[2], 30.0, 1e-12);
+}
+
+void test_cuda_D2_to_vector_2d() {
+    std::cout << "[CUDA D2] to_vector<double>() on 2D CUDA tensor — row-major order\n";
+    Tensor t = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    auto v = t.to_vector<double>();
+    CHECK(v.size() == 6);
+    for (std::size_t i = 0; i < 6; ++i)
+        CHECK_NEAR(v[i], static_cast<double>(i + 1), 1e-12);
+}
+
+void test_cuda_D3_print_does_not_throw() {
+    std::cout << "[CUDA D3] print() on CUDA tensor: no crash\n";
+    Tensor t = Tensor::from_data<double>({1.0, 2.0, 3.0}, {3}, cuda_backend());
+    bool threw = false;
+    try { t.print("cuda_test"); } catch (...) { threw = true; }
+    CHECK(!threw);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// E — Views on CUDA (pure metadata — no kernel dispatch)
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_E1_reshape_flatten() {
+    std::cout << "[CUDA E1] reshape {2,3} → {6}: values preserved\n";
+    Tensor t = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    Tensor r = t.reshape({6});
+    CHECK(r.shape() == (std::vector<std::size_t>{6}));
+    for (std::size_t i = 0; i < 6; ++i)
+        CHECK_NEAR(r.at({i}), static_cast<double>(i + 1), 1e-12);
+}
+
+void test_cuda_E2_reshape_reinterpret() {
+    std::cout << "[CUDA E2] reshape {2,3} → {3,2}: row-major reinterpretation\n";
+    Tensor t = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    Tensor r = t.reshape({3, 2});
+    CHECK(r.shape() == (std::vector<std::size_t>{3, 2}));
+    CHECK_NEAR(r.at({0,0}), 1.0, 1e-12);
+    CHECK_NEAR(r.at({0,1}), 2.0, 1e-12);
+    CHECK_NEAR(r.at({1,0}), 3.0, 1e-12);
+    CHECK_NEAR(r.at({1,1}), 4.0, 1e-12);
+    CHECK_NEAR(r.at({2,0}), 5.0, 1e-12);
+    CHECK_NEAR(r.at({2,1}), 6.0, 1e-12);
+}
+
+void test_cuda_E3_reshape_numel_mismatch_throws() {
+    std::cout << "[CUDA E3] reshape numel mismatch throws\n";
+    Tensor t = Tensor::zeros({2,3}, cuda_backend());
+    bool threw = false;
+    try { (void)t.reshape({2,4}); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+void test_cuda_E4_transpose_values_correct() {
+    std::cout << "[CUDA E4] transpose(0,1) on CUDA tensor: shape {3,2}, values t[j][i]\n";
+    Tensor a = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    Tensor t = a.transpose(0, 1);
+    CHECK(t.shape() == (std::vector<std::size_t>{3, 2}));
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 2; ++j)
+            CHECK_NEAR(t.at({i, j}), a.at({j, i}), 1e-12);
+}
+
+void test_cuda_E5_transpose_dim_out_of_range_throws() {
+    std::cout << "[CUDA E5] transpose dim out of range throws\n";
+    Tensor t = Tensor::zeros({2,3}, cuda_backend());
+    bool threw = false;
+    try { (void)t.transpose(0, 5); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+void test_cuda_E6_transpose_is_view_shares_buffer() {
+    std::cout << "[CUDA E6] transpose shares buffer — is_unique false on both\n";
+    Tensor a = Tensor::from_data<double>({1,2,3,4}, {2,2}, cuda_backend());
+    Tensor t = a.transpose(0, 1);
+    CHECK(!a.is_unique());
+    CHECK(!t.is_unique());
+}
+
+void test_cuda_E7_transpose_is_not_contiguous() {
+    std::cout << "[CUDA E7] transpose result is not contiguous\n";
+    Tensor a = Tensor::from_data<double>({1,2,3,4}, {2,2}, cuda_backend());
+    CHECK(a.is_contiguous());
+    Tensor t = a.transpose(0, 1);
+    CHECK(!t.is_contiguous());
+}
+
+void test_cuda_E8_contiguous_on_noncontiguous_cuda_throws() {
+    std::cout << "[CUDA E8] contiguous() on non-contiguous CUDA tensor throws "
+                 "(no copy dispatcher)\n";
+    Tensor a = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    Tensor nc = a.transpose(0, 1);
+    CHECK(!nc.is_contiguous());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)nc.contiguous(); },
+                          "copy dispatcher not registered", msg);
+    CHECK(ok);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F — Cross-device copy edge cases
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_F1_cpu_to_cuda_to_cpu_round_trip() {
+    std::cout << "[CUDA F1] CPU → cuda() → cpu() round-trip: values preserved\n";
+    Tensor h = Tensor::from_data<double>({1.1, 2.2, 3.3, 4.4}, {4}, cpu_backend());
+    Tensor d = h.cuda();
+    Tensor h2 = d.cpu();
+    CHECK(h2.backend().device() == Device::CPU);
+    CHECK_NEAR(h2.at({0}), 1.1, 1e-10);
+    CHECK_NEAR(h2.at({1}), 2.2, 1e-10);
+    CHECK_NEAR(h2.at({2}), 3.3, 1e-10);
+    CHECK_NEAR(h2.at({3}), 4.4, 1e-10);
+}
+
+void test_cuda_F2_2d_tensor_round_trip() {
+    std::cout << "[CUDA F2] 2D {2,3} CPU → cuda → cpu: at({r,c}) preserved\n";
+    std::vector<double> vals = {1,2,3,4,5,6};
+    Tensor h  = Tensor::from_data<double>(vals, {2,3}, cpu_backend());
+    Tensor d  = h.cuda();
+    Tensor h2 = d.cpu();
+    CHECK(h2.shape() == (std::vector<std::size_t>{2, 3}));
+    for (std::size_t r = 0; r < 2; ++r)
+        for (std::size_t c = 0; c < 3; ++c)
+            CHECK_NEAR(h2.at({r, c}), vals[r * 3 + c], 1e-12);
+}
+
+void test_cuda_F3_noncontiguous_cpu_to_cuda() {
+    std::cout << "[CUDA F3] non-contiguous CPU tensor → cuda(): CPU contiguous() "
+                 "runs first, values correct on CUDA\n";
+    // h = [[1,2],[3,4]]; ht = h^T = [[1,3],[2,4]] (non-contiguous on CPU)
+    Tensor h  = Tensor::from_data<double>({1,2,3,4}, {2,2}, cpu_backend());
+    Tensor ht = h.transpose(0, 1);
+    CHECK(!ht.is_contiguous());
+
+    Tensor d = ht.cuda();  // CPU dispatch_copy → contiguous; then cudaMemcpy
+    CHECK(d.backend().device() == Device::CUDA);
+    CHECK(d.is_contiguous());
+    // Logical values of ht: [0][0]=1, [0][1]=3, [1][0]=2, [1][1]=4
+    CHECK_NEAR(d.at({0,0}), ht.at({0,0}), 1e-12);
+    CHECK_NEAR(d.at({0,1}), ht.at({0,1}), 1e-12);
+    CHECK_NEAR(d.at({1,0}), ht.at({1,0}), 1e-12);
+    CHECK_NEAR(d.at({1,1}), ht.at({1,1}), 1e-12);
+}
+
+void test_cuda_F4_noncontiguous_cuda_to_cpu_throws() {
+    std::cout << "[CUDA F4] non-contiguous CUDA tensor → cpu() throws "
+                 "(no CUDA copy dispatcher)\n";
+    Tensor t  = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    Tensor nc = t.transpose(0, 1);
+    CHECK(!nc.is_contiguous());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)nc.cpu(); },
+                          "copy dispatcher not registered", msg);
+    CHECK(ok);
+}
+
+void test_cuda_F5_to_cuda_on_cuda_is_fast_path() {
+    std::cout << "[CUDA F5] to(Device::CUDA) on CUDA tensor is the identity fast path\n";
+    const std::size_t before = cuda_backend().memory_manager()->bytes_allocated();
+    Tensor t = Tensor::zeros({8}, cuda_backend());
+    t.fill_(5.0);
+    const std::size_t with_t = cuda_backend().memory_manager()->bytes_allocated();
+    Tensor same = t.to(Device::CUDA);
+    // Fast path: no new allocation
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == with_t);
+    CHECK_NEAR(same.at({0}), 5.0, 1e-12);
+    (void)before;
+}
+
+void test_cuda_F6_to_cpu_on_cpu_is_fast_path() {
+    std::cout << "[CUDA F6] to(Device::CPU) on CPU tensor is the identity fast path\n";
+    Tensor t = Tensor::from_data<double>({1,2,3}, {3}, cpu_backend());
+    Tensor same = t.to(Device::CPU);
+    CHECK(same.backend().device() == Device::CPU);
+    CHECK_NEAR(same.at({0}), 1.0, 1e-12);
+}
+
+void test_cuda_F7_to_does_not_preserve_requires_grad() {
+    std::cout << "[CUDA F7] to() drops autograd history — returned tensor is a plain leaf\n";
+    Tensor h = Tensor::from_data<double>({1,2,3}, {3}, cpu_backend(),
+                                         /*requires_grad=*/true);
+    CHECK(h.requires_grad());
+    Tensor d = h.cuda();
+    CHECK(!d.requires_grad());  // to() always returns a plain leaf
+    Tensor h2 = d.cpu();
+    CHECK(!h2.requires_grad());
+}
+
+void test_cuda_F8_bytes_allocated_restored_after_transfer() {
+    std::cout << "[CUDA F8] CUDA bytes_allocated returns to baseline after transfer tensor "
+                 "is destroyed\n";
+    const std::size_t base = cuda_backend().memory_manager()->bytes_allocated();
     {
-        std::cout << "[CUDA Test 9] cuda() moves a CPU tensor to CUDA\n";
-        Tensor h = Tensor::from_data<double>({1.0, 2.0, 3.0}, {3}, cpu_backend());
+        Tensor h = Tensor::from_data<double>({1,2,3,4}, {4}, cpu_backend());
         Tensor d = h.cuda();
-        CHECK(d.backend().device() == Device::CUDA);
-        CHECK_NEAR(d.at({0}), 1.0, 1e-10);
-        CHECK_NEAR(d.at({1}), 2.0, 1e-10);
-        CHECK_NEAR(d.at({2}), 3.0, 1e-10);
+        CHECK(cuda_backend().memory_manager()->bytes_allocated() > base);
     }
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == base);
+}
 
-    // ── Test 10: to() on same device is a no-copy fast path ───────────────────
-    {
-        std::cout << "[CUDA Test 10] to(Device::CUDA) on CUDA tensor returns same object\n";
-        Tensor t = Tensor::zeros({4}, cuda_backend());
-        t.fill_(42.0);
-        Tensor same = t.to(Device::CUDA);
-        CHECK(same.backend().device() == Device::CUDA);
-        // Verify values are intact (fast path — no allocation)
-        CHECK_NEAR(same.at({0}), 42.0, 1e-10);
-        CHECK_NEAR(same.at({3}), 42.0, 1e-10);
-    }
+void test_cuda_F9_large_tensor_transfer() {
+    std::cout << "[CUDA F9] 512-element: CPU fill → cuda() → cpu() spot-check\n";
+    constexpr std::size_t N = 512;
+    std::vector<double> vals(N);
+    for (std::size_t i = 0; i < N; ++i) vals[i] = static_cast<double>(i) * 0.5;
+    Tensor h  = Tensor::from_data<double>(vals, {N}, cpu_backend());
+    Tensor d  = h.cuda();
+    Tensor h2 = d.cpu();
+    CHECK_NEAR(h2.at({0}),     vals[0],     1e-10);
+    CHECK_NEAR(h2.at({N/4}),   vals[N/4],   1e-10);
+    CHECK_NEAR(h2.at({N/2}),   vals[N/2],   1e-10);
+    CHECK_NEAR(h2.at({N - 1}), vals[N - 1], 1e-10);
+}
 
-    // ── Test 11: round-trip CPU → CUDA → CPU preserves values ────────────────
+
+// ═════════════════════════════════════════════════════════════════════════════
+// G — Unregistered dispatchers throw with predictable messages
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_G1_add_throws() {
+    std::cout << "[CUDA G1] add() on CUDA tensors throws — no binary dispatcher\n";
+    Tensor a = Tensor::zeros({4}, cuda_backend());
+    Tensor b = Tensor::zeros({4}, cuda_backend());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)a.add(b); }, "no binary dispatcher", msg);
+    CHECK(ok);
+}
+
+void test_cuda_G2_mul_throws() {
+    std::cout << "[CUDA G2] mul() on CUDA tensors throws — no binary dispatcher\n";
+    Tensor a = Tensor::zeros({4}, cuda_backend());
+    Tensor b = Tensor::zeros({4}, cuda_backend());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)a.mul(b); }, "no binary dispatcher", msg);
+    CHECK(ok);
+}
+
+void test_cuda_G3_neg_throws() {
+    std::cout << "[CUDA G3] neg() on CUDA tensor throws — no unary dispatcher\n";
+    Tensor a = Tensor::zeros({4}, cuda_backend());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)a.neg(); }, "no unary dispatcher", msg);
+    CHECK(ok);
+}
+
+void test_cuda_G4_exp_throws() {
+    std::cout << "[CUDA G4] exp() on CUDA tensor throws — no unary dispatcher\n";
+    Tensor a = Tensor::zeros({4}, cuda_backend());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)a.exp(); }, "no unary dispatcher", msg);
+    CHECK(ok);
+}
+
+void test_cuda_G5_sum_throws() {
+    std::cout << "[CUDA G5] sum() on CUDA tensor throws — no unary dispatcher (ReduceSum)\n";
+    Tensor a = Tensor::zeros({4}, cuda_backend());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)a.sum(); }, "no unary dispatcher", msg);
+    CHECK(ok);
+}
+
+void test_cuda_G6_matmul_throws() {
+    std::cout << "[CUDA G6] matmul() on CUDA tensors throws — no matmul dispatcher\n";
+    Tensor a = Tensor::zeros({2,2}, cuda_backend());
+    Tensor b = Tensor::zeros({2,2}, cuda_backend());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)a.matmul(b); }, "matmul dispatcher not registered", msg);
+    CHECK(ok);
+}
+
+void test_cuda_G7_relu_throws() {
+    std::cout << "[CUDA G7] relu() on CUDA tensor throws — no unary dispatcher\n";
+    Tensor a = Tensor::zeros({4}, cuda_backend());
+    std::string msg;
+    bool ok = throws_with([&]{ (void)a.relu(); }, "no unary dispatcher", msg);
+    CHECK(ok);
+}
+
+void test_cuda_G8_to_on_undefined_throws() {
+    std::cout << "[CUDA G8] to(Device::CUDA) on undefined tensor throws\n";
+    Tensor undef;
+    std::string msg;
+    bool ok = throws_with([&]{ (void)undef.to(Device::CUDA); },
+                          "Tensor::to() called on undefined tensor", msg);
+    CHECK(ok);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// H — Streams
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_H1_default_stream_not_null() {
+    std::cout << "[CUDA H1] default_stream() returns non-null\n";
+    CHECK(cuda_backend().default_stream() != nullptr);
+}
+
+void test_cuda_H2_stream_raw_handle_valid() {
+    std::cout << "[CUDA H2] CUDAStream::raw() returns a valid (non-null) cudaStream_t\n";
+    Stream* s = cuda_backend().default_stream();
+    auto*   cs = static_cast<CUDAStream*>(s);
+    CHECK(cs != nullptr);
+    CHECK(cs->raw() != nullptr);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// I — Autograd metadata and buffer sharing (mirrors test_tensor.cpp)
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_I1_zeros_default_no_grad() {
+    std::cout << "[CUDA I1] zeros: default — leaf, requires_grad=false, grad undefined\n";
+    Tensor t = Tensor::zeros({2,3}, cuda_backend());
+    CHECK(!t.requires_grad());
+    CHECK(t.is_leaf());
+    CHECK(!t.grad().defined());
+}
+
+void test_cuda_I2_zeros_with_grad() {
+    std::cout << "[CUDA I2] zeros: requires_grad=true — leaf, grad undefined\n";
+    Tensor t = Tensor::zeros({3}, cuda_backend(), DType::Float64, true);
+    CHECK(t.requires_grad());
+    CHECK(t.is_leaf());
+    CHECK(!t.grad().defined());
+}
+
+void test_cuda_I3_from_data_with_grad_values_correct() {
+    std::cout << "[CUDA I3] from_data: requires_grad=true, values correct, grad undefined\n";
+    Tensor t = Tensor::from_data<double>({1.0, 2.0, 3.0}, {3}, cuda_backend(), true);
+    CHECK(t.requires_grad());
+    CHECK(t.is_leaf());
+    CHECK_NEAR(t.at({0}), 1.0, 1e-12);
+    CHECK_NEAR(t.at({1}), 2.0, 1e-12);
+    CHECK_NEAR(t.at({2}), 3.0, 1e-12);
+    CHECK(!t.grad().defined());
+}
+
+void test_cuda_I4_detach_clears_grad_same_shape() {
+    std::cout << "[CUDA I4] detach(): clears requires_grad, shape preserved, values readable\n";
+    Tensor t = Tensor::zeros({2,3}, cuda_backend(), DType::Float64, true);
+    Tensor d = t.detach();
+    CHECK(!d.requires_grad());
+    CHECK(!d.grad().defined());
+    CHECK(d.shape() == t.shape());
+    for (std::size_t r = 0; r < 2; ++r)
+        for (std::size_t c = 0; c < 3; ++c)
+            CHECK_NEAR(d.at({r, c}), 0.0, 1e-12);
+}
+
+void test_cuda_I5_is_unique_fresh_tensor() {
+    std::cout << "[CUDA I5] is_unique() true for freshly allocated CUDA tensor\n";
+    Tensor t = Tensor::zeros({4}, cuda_backend());
+    CHECK(t.is_unique());
+}
+
+void test_cuda_I6_is_unique_false_after_copy_restored_after_destroy() {
+    std::cout << "[CUDA I6] is_unique false after copy; restored when copy destroyed\n";
+    Tensor t = Tensor::zeros({4}, cuda_backend());
     {
-        std::cout << "[CUDA Test 11] round-trip CPU → CUDA → CPU preserves values\n";
-        Tensor cpu0 = Tensor::from_data<double>({1.1, 2.2, 3.3, 4.4}, {4}, cpu_backend());
-        Tensor gpu  = cpu0.cuda();
-        Tensor cpu1 = gpu.cpu();
-        CHECK(cpu1.backend().device() == Device::CPU);
-        CHECK_NEAR(cpu1.at({0}), 1.1, 1e-10);
-        CHECK_NEAR(cpu1.at({1}), 2.2, 1e-10);
-        CHECK_NEAR(cpu1.at({2}), 3.3, 1e-10);
-        CHECK_NEAR(cpu1.at({3}), 4.4, 1e-10);
+        Tensor u = t;
+        CHECK(!t.is_unique());
+        CHECK(!u.is_unique());
     }
+    CHECK(t.is_unique());
+}
+
+void test_cuda_I7_is_unique_false_for_reshape_view() {
+    std::cout << "[CUDA I7] reshape view shares buffer — is_unique false on both\n";
+    Tensor t = Tensor::zeros({2,3}, cuda_backend());
+    Tensor v = t.reshape({6});
+    CHECK(!t.is_unique());
+    CHECK(!v.is_unique());
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Runner
+// ═════════════════════════════════════════════════════════════════════════════
+
+void run_cuda_tests() {
+    // A — Memory
+    test_cuda_A1_bytes_allocated_starts_at_zero();
+    test_cuda_A2_allocate_increments_free_decrements();
+    test_cuda_A3_multiple_tensors_accumulate_and_release();
+    test_cuda_A4_release_cache_does_not_crash();
+    test_cuda_A5_bytes_reserved_equals_allocated();
+
+    // B — Tensor creation
+    test_cuda_B1_zeros_all_zero();
+    test_cuda_B2_ones_all_one();
+    test_cuda_B3_full_constant_value();
+    test_cuda_B4_from_data_1d();
+    test_cuda_B5_from_data_2d();
+    test_cuda_B6_zeros_like();
+    test_cuda_B7_ones_like();
+    test_cuda_B8_requires_grad_on_cuda();
+
+    // C — fill_ and element access
+    test_cuda_C1_fill_basic();
+    test_cuda_C2_fill_negative();
+    test_cuda_C3_fill_zero_overwrites();
+    test_cuda_C4_fill_twice_second_wins();
+    test_cuda_C5_at_2d_stride_correct();
+    test_cuda_C6_large_tensor_fill_and_spot_check();
+
+    // D — to_vector() and print()
+    test_cuda_D1_to_vector_1d();
+    test_cuda_D2_to_vector_2d();
+    test_cuda_D3_print_does_not_throw();
+
+    // E — Views on CUDA
+    test_cuda_E1_reshape_flatten();
+    test_cuda_E2_reshape_reinterpret();
+    test_cuda_E3_reshape_numel_mismatch_throws();
+    test_cuda_E4_transpose_values_correct();
+    test_cuda_E5_transpose_dim_out_of_range_throws();
+    test_cuda_E6_transpose_is_view_shares_buffer();
+    test_cuda_E7_transpose_is_not_contiguous();
+    test_cuda_E8_contiguous_on_noncontiguous_cuda_throws();
+
+    // F — Cross-device copy edge cases
+    test_cuda_F1_cpu_to_cuda_to_cpu_round_trip();
+    test_cuda_F2_2d_tensor_round_trip();
+    test_cuda_F3_noncontiguous_cpu_to_cuda();
+    test_cuda_F4_noncontiguous_cuda_to_cpu_throws();
+    test_cuda_F5_to_cuda_on_cuda_is_fast_path();
+    test_cuda_F6_to_cpu_on_cpu_is_fast_path();
+    test_cuda_F7_to_does_not_preserve_requires_grad();
+    test_cuda_F8_bytes_allocated_restored_after_transfer();
+    test_cuda_F9_large_tensor_transfer();
+
+    // G — Unregistered dispatchers throw
+    test_cuda_G1_add_throws();
+    test_cuda_G2_mul_throws();
+    test_cuda_G3_neg_throws();
+    test_cuda_G4_exp_throws();
+    test_cuda_G5_sum_throws();
+    test_cuda_G6_matmul_throws();
+    test_cuda_G7_relu_throws();
+    test_cuda_G8_to_on_undefined_throws();
+
+    // H — Streams
+    test_cuda_H1_default_stream_not_null();
+    test_cuda_H2_stream_raw_handle_valid();
+
+    // I — Autograd metadata (mirrors test_tensor.cpp)
+    test_cuda_I1_zeros_default_no_grad();
+    test_cuda_I2_zeros_with_grad();
+    test_cuda_I3_from_data_with_grad_values_correct();
+    test_cuda_I4_detach_clears_grad_same_shape();
+    test_cuda_I5_is_unique_fresh_tensor();
+    test_cuda_I6_is_unique_false_after_copy_restored_after_destroy();
+    test_cuda_I7_is_unique_false_for_reshape_view();
 }
 
 } // namespace otter::test
