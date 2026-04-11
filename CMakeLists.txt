@@ -24,7 +24,16 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
 
-add_compile_options(-Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion)
+# Scope warning flags to CXX only — nvcc has its own -Werror that does not
+# accept GCC warning names and will fatal-error if they are passed to it.
+add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+    $<$<COMPILE_LANGUAGE:CXX>:-Werror>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wconversion>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wsign-conversion>
+)
 
 add_compile_options($<$<CONFIG:Debug>:-O0>)
 add_compile_options($<$<CONFIG:Debug>:-g>)
