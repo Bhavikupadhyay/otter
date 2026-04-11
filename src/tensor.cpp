@@ -27,7 +27,27 @@
 #include "otter/ops/sum_operation.h"
 #include "otter/ops/transpose_operation.h"
 
+#include "otter/backends/cpu.h"
+#ifdef OTTER_CUDA
+#  include "otter/backends/cuda.h"
+#endif
+
 namespace otter {
+
+namespace {
+
+Backend& backend_for_device(Device d) {
+    switch (d) {
+    case Device::CPU:  return otter::cpu_backend();
+#ifdef OTTER_CUDA
+    case Device::CUDA: return otter::cuda_backend();
+#endif
+    default:
+        throw std::runtime_error("Tensor::to(): unsupported device");
+    }
+}
+
+} // namespace
 
 // ── Private constructor ───────────────────────────────────────────────────────
 
@@ -153,6 +173,31 @@ Tensor Tensor::contiguous() const {
     Tensor out = zeros(shape_, *backend_, dtype_);
     backend_->kernel_engine()->dispatch_copy(*this, out);
     return out;
+}
+
+// ── Cross-device copy ─────────────────────────────────────────────────────────
+
+Tensor Tensor::to(Device d) const {
+    if (!defined())
+        throw std::runtime_error("Tensor::to() called on undefined tensor");
+    if (backend().device() == d) return *this;
+    Backend& target = backend_for_device(d);
+    // Normalise layout on the source device before the host read.
+    Tensor src = contiguous();
+    std::vector<double> host_data;
+    host_data.reserve(src.numel());
+    src.backend().kernel_engine()->dispatch_bulk_host_read(src, host_data);
+    return Tensor::from_data<double>(host_data, src.shape(), target);
+}
+
+Tensor Tensor::cpu() const { return to(Device::CPU); }
+
+Tensor Tensor::cuda() const {
+#ifdef OTTER_CUDA
+    return to(Device::CUDA);
+#else
+    throw std::runtime_error("Tensor::cuda(): built without OTTER_CUDA");
+#endif
 }
 
 // ── Element access ────────────────────────────────────────────────────────────

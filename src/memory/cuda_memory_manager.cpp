@@ -1,22 +1,9 @@
 #include "memory/cuda_memory_manager.h"
 
 #include <cassert>
-#include <stdexcept>
-#include <string>
 
-#include <cuda_runtime.h>
-
+#include "cuda_check.h"
 #include "otter/detail/math_utils.h"
-
-// Wrap every CUDA call. Throws on error — callers that are noexcept use the
-// raw CUDA API directly and check via assert instead.
-#define OTTER_CUDA_CHECK(call)                                              \
-    do {                                                                    \
-        cudaError_t _err = (call);                                          \
-        if (_err != cudaSuccess)                                            \
-            throw std::runtime_error(                                       \
-                std::string("CUDA error: ") + ::cudaGetErrorString(_err));  \
-    } while (0)
 
 namespace otter {
 

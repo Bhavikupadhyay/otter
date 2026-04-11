@@ -25,4 +25,9 @@ target_include_directories(otter_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
+if(OTTER_CUDA)
+    target_sources(otter_tests PRIVATE test_cuda.cpp)
+    target_compile_definitions(otter_tests PRIVATE OTTER_CUDA)
+endif()
+
 add_test(NAME otter_tests COMMAND otter_tests)

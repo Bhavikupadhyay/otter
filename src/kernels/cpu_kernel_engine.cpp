@@ -238,6 +238,14 @@ struct CPUAxpyDispatcher final : KernelEngine::AxpyDispatcher {
     }
 };
 
+struct CPUBulkHostReadDispatcher final : KernelEngine::BulkHostReadDispatcher {
+    CPUKernelEngine* engine_;
+    explicit CPUBulkHostReadDispatcher(CPUKernelEngine* e) : engine_(e) {}
+    void call(const Tensor& src, std::vector<double>& dst) const override {
+        engine_->cpu_bulk_host_read(src, dst);
+    }
+};
+
 } // namespace (anonymous)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,8 +269,9 @@ CPUKernelEngine::CPUKernelEngine() {
     register_copy        (std::make_unique<CPUCopyDispatcher>        (this));
     register_matmul      (std::make_unique<CPUMatMulDispatcher>      (this));
     register_element_read(std::make_unique<CPUElementReadDispatcher> (this));
-    register_scale       (std::make_unique<CPUScaleDispatcher>       (this));
-    register_axpy        (std::make_unique<CPUAxpyDispatcher>        (this));
+    register_scale          (std::make_unique<CPUScaleDispatcher>          (this));
+    register_axpy           (std::make_unique<CPUAxpyDispatcher>           (this));
+    register_bulk_host_read (std::make_unique<CPUBulkHostReadDispatcher>   (this));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -461,6 +470,13 @@ void CPUKernelEngine::cpu_sum(const Tensor& a, Tensor& out) const {
 double CPUKernelEngine::cpu_element_read(const Tensor& t, std::size_t flat_idx) const {
     // flat_idx was computed by Tensor::at() including offset + stride indexing.
     return raw_const<double>(t.buffer())[flat_idx];
+}
+
+void CPUKernelEngine::cpu_bulk_host_read(const Tensor& src,
+                                          std::vector<double>& dst) const {
+    assert(src.is_contiguous());
+    const double* ptr = raw_const<double>(src.buffer()) + src.offset();
+    dst.assign(ptr, ptr + src.numel());
 }
 
 // ── Copy (arbitrary strides → arbitrary strides) ─────────────────────────────

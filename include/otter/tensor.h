@@ -134,6 +134,16 @@ public:
     // Intentionally not differentiable — it is a data normalisation step.
     [[nodiscard]] Tensor contiguous() const;
 
+    // ── Cross-device copy ─────────────────────────────────────────────────────
+    // Returns a new tensor with the same values on the target device.
+    // If already on the target device, returns *this (no allocation).
+    // Autograd history is not preserved — returned tensor is always a leaf
+    // with requires_grad=false.
+    [[nodiscard]] Tensor to  (Device d) const;
+    [[nodiscard]] Tensor cpu ()         const;  // shorthand for to(Device::CPU)
+    [[nodiscard]] Tensor cuda()         const;  // shorthand for to(Device::CUDA);
+                                                // throws if built without OTTER_CUDA
+
     // ── Scalar read (device-safe) ─────────────────────────────────────────────
     // Uses dispatch_element_read — makes device→host transfer explicit.
     // On a CUDA backend this becomes a kernel launch; never a silent host deref.

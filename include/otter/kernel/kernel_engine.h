@@ -152,6 +152,21 @@ public:
                                           std::size_t flat_idx) const = 0;
     };
 
+    // Reads all elements of a contiguous tensor into a host-side vector.
+    // Precondition: src is contiguous — caller must call contiguous() first.
+    // On CUDA: one cudaDeviceSynchronize() + one host-side assign from unified memory.
+    // On CPU: one direct assign from the buffer pointer — zero overhead.
+    // dtype is always double (Float64) for the current library.
+    struct BulkHostReadDispatcher {
+        BulkHostReadDispatcher()                                          = default;
+        virtual ~BulkHostReadDispatcher()                                 = default;
+        BulkHostReadDispatcher(const BulkHostReadDispatcher&)             = delete;
+        BulkHostReadDispatcher& operator=(const BulkHostReadDispatcher&)  = delete;
+        BulkHostReadDispatcher(BulkHostReadDispatcher&&)                  = delete;
+        BulkHostReadDispatcher& operator=(BulkHostReadDispatcher&&)       = delete;
+        virtual void call(const Tensor& src, std::vector<double>& dst) const = 0;
+    };
+
     // ── Rule of Five ─────────────────────────────────────────────────────────
     KernelEngine()                               = default;
     virtual ~KernelEngine()                      = default;  // virtual: subclasses exist
@@ -216,6 +231,14 @@ public:
         axpy_->call(dst, alpha, src);
     }
 
+    void dispatch_bulk_host_read(const Tensor& src,
+                                  std::vector<double>& dst) const {
+        if (!bulk_host_read_)
+            throw std::runtime_error(
+                "KernelEngine: bulk_host_read dispatcher not registered");
+        bulk_host_read_->call(src, dst);
+    }
+
 protected:
     // ── Registration — called by subclass constructors only ─────────────────
 
@@ -243,6 +266,9 @@ protected:
     void register_axpy(std::unique_ptr<AxpyDispatcher> d) {
         axpy_ = std::move(d);
     }
+    void register_bulk_host_read(std::unique_ptr<BulkHostReadDispatcher> d) {
+        bulk_host_read_ = std::move(d);
+    }
 
     // ── Raw Buffer access — bodies in src/kernels/dispatcher.h ──────────────
     // Kernel .cpp files must include dispatcher.h to get these definitions.
@@ -262,8 +288,9 @@ private:
     std::unique_ptr<MatMulDispatcher>      matmul_;
     std::unique_ptr<CopyDispatcher>        copy_;
     std::unique_ptr<ElementReadDispatcher> element_read_;
-    std::unique_ptr<ScaleDispatcher>       scale_;
-    std::unique_ptr<AxpyDispatcher>        axpy_;
+    std::unique_ptr<ScaleDispatcher>        scale_;
+    std::unique_ptr<AxpyDispatcher>         axpy_;
+    std::unique_ptr<BulkHostReadDispatcher> bulk_host_read_;
 };
 
 } // namespace otter

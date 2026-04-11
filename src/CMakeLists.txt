@@ -8,6 +8,10 @@ target_include_directories(otter_core
 target_sources(otter_core PRIVATE buffer.cpp)
 target_sources(otter_core PRIVATE backend.cpp)
 
+if(OTTER_CUDA)
+    target_compile_definitions(otter_core PRIVATE OTTER_CUDA)
+endif()
+
 add_subdirectory(memory)
 add_subdirectory(kernels)
 add_subdirectory(backends)

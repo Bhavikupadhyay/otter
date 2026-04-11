@@ -3,16 +3,31 @@
 
 #include <cstring>
 
+#ifdef OTTER_CUDA
+#  include "cuda_check.h"
+#  include "otter/core/device.h"
+#endif
+
 namespace otter {
 
 Buffer::Buffer(std::size_t bytes, Backend& backend, const void* init_data)
     : data_(nullptr), size_(bytes), backend_(&backend)
 {
     data_ = backend.memory_manager()->allocate(bytes);
-    if (init_data)
+    if (init_data) {
+#ifdef OTTER_CUDA
+        if (backend.memory_manager()->device() == Device::CUDA) {
+            OTTER_CUDA_CHECK(::cudaMemcpy(data_, init_data, bytes,
+                                          cudaMemcpyHostToDevice));
+        } else {
+            std::memcpy(data_, init_data, bytes);
+        }
+#else
         std::memcpy(data_, init_data, bytes);
-    else
+#endif
+    } else {
         std::memset(data_, 0, bytes);
+    }
 }
 
 Buffer::~Buffer() noexcept {

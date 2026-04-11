@@ -46,8 +46,10 @@ public:
     double cpu_element_read(const Tensor& t, std::size_t flat_idx) const;
 
     // In-place primitives — no use_count check; shared visibility is the intent.
-    void   cpu_scale(Tensor& dst, double alpha) const;
-    void   cpu_axpy (Tensor& dst, double alpha, const Tensor& src) const;
+    void   cpu_scale         (Tensor& dst, double alpha) const;
+    void   cpu_axpy          (Tensor& dst, double alpha, const Tensor& src) const;
+
+    void   cpu_bulk_host_read(const Tensor& src, std::vector<double>& dst) const;
 };
 
 } // namespace otter
