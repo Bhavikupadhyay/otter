@@ -26,6 +26,34 @@ public:
     void   cuda_fill          (Tensor& t, double value) const;
     double cuda_element_read  (const Tensor& t, std::size_t flat_idx) const;
     void   cuda_bulk_host_read(const Tensor& src, std::vector<double>& dst) const;
+
+    // Binary element-wise
+    void cuda_add(const Tensor& a, const Tensor& b, Tensor& out) const;
+    void cuda_sub(const Tensor& a, const Tensor& b, Tensor& out) const;
+    void cuda_mul(const Tensor& a, const Tensor& b, Tensor& out) const;
+    void cuda_div(const Tensor& a, const Tensor& b, Tensor& out) const;
+
+    // Unary element-wise
+    void cuda_neg      (const Tensor& a, Tensor& out) const;
+    void cuda_exp      (const Tensor& a, Tensor& out) const;
+    void cuda_log      (const Tensor& a, Tensor& out) const;
+    void cuda_sqrt     (const Tensor& a, Tensor& out) const;
+    void cuda_relu     (const Tensor& a, Tensor& out) const;
+    void cuda_relu_mask(const Tensor& a, Tensor& out) const;
+
+    // In-place
+    void cuda_scale(Tensor& dst, double alpha) const;
+    void cuda_axpy (Tensor& dst, double alpha, const Tensor& src) const;
+
+    // Copy (non-contiguous src → contiguous dst)
+    void cuda_copy(const Tensor& src, Tensor& dst) const;
+
+    // Reductions
+    void cuda_sum      (const Tensor& a, Tensor& out) const;
+    void cuda_reduce_to(const Tensor& src, Tensor& dst) const;
+
+    // Matrix multiply
+    void cuda_matmul(const Tensor& a, const Tensor& b, Tensor& out) const;
 };
 
 } // namespace otter

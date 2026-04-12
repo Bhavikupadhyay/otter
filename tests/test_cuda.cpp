@@ -322,16 +322,24 @@ void test_cuda_E7_transpose_is_not_contiguous() {
     CHECK(!t.is_contiguous());
 }
 
-void test_cuda_E8_contiguous_on_noncontiguous_cuda_throws() {
-    std::cout << "[CUDA E8] contiguous() on non-contiguous CUDA tensor throws "
-                 "(no copy dispatcher)\n";
-    Tensor a = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+void test_cuda_E8_contiguous_on_noncontiguous_cuda_materialises() {
+    std::cout << "[CUDA E8] contiguous() on non-contiguous CUDA tensor: "
+                 "produces correct contiguous copy\n";
+    // a = [[1,2,3],[4,5,6]] shape {2,3}
+    // nc = a^T = [[1,4],[2,5],[3,6]] shape {3,2}, non-contiguous
+    Tensor a  = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
     Tensor nc = a.transpose(0, 1);
     CHECK(!nc.is_contiguous());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)nc.contiguous(); },
-                          "copy dispatcher not registered", msg);
-    CHECK(ok);
+    Tensor c = nc.contiguous();
+    CHECK(c.is_contiguous());
+    CHECK(c.shape() == (std::vector<std::size_t>{3, 2}));
+    // Logical values of nc (= a^T): nc[i][j] = a[j][i]
+    CHECK_NEAR(c.at({0,0}), nc.at({0,0}), 1e-12);  // a[0][0] = 1
+    CHECK_NEAR(c.at({0,1}), nc.at({0,1}), 1e-12);  // a[1][0] = 4
+    CHECK_NEAR(c.at({1,0}), nc.at({1,0}), 1e-12);  // a[0][1] = 2
+    CHECK_NEAR(c.at({1,1}), nc.at({1,1}), 1e-12);  // a[1][1] = 5
+    CHECK_NEAR(c.at({2,0}), nc.at({2,0}), 1e-12);  // a[0][2] = 3
+    CHECK_NEAR(c.at({2,1}), nc.at({2,1}), 1e-12);  // a[1][2] = 6
 }
 
 
@@ -381,16 +389,25 @@ void test_cuda_F3_noncontiguous_cpu_to_cuda() {
     CHECK_NEAR(d.at({1,1}), ht.at({1,1}), 1e-12);
 }
 
-void test_cuda_F4_noncontiguous_cuda_to_cpu_throws() {
-    std::cout << "[CUDA F4] non-contiguous CUDA tensor → cpu() throws "
-                 "(no CUDA copy dispatcher)\n";
+void test_cuda_F4_noncontiguous_cuda_to_cpu_works() {
+    std::cout << "[CUDA F4] non-contiguous CUDA tensor → cpu(): "
+                 "CUDA copy kernel materialises before transfer\n";
+    // t = [[1,2,3],[4,5,6]] shape {2,3}
+    // nc = t^T shape {3,2}, non-contiguous on CUDA
     Tensor t  = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
     Tensor nc = t.transpose(0, 1);
     CHECK(!nc.is_contiguous());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)nc.cpu(); },
-                          "copy dispatcher not registered", msg);
-    CHECK(ok);
+    Tensor h = nc.cpu();
+    CHECK(h.backend().device() == Device::CPU);
+    CHECK(h.is_contiguous());
+    CHECK(h.shape() == (std::vector<std::size_t>{3, 2}));
+    // Values must match logical transpose: h[i][j] == t[j][i]
+    CHECK_NEAR(h.at({0,0}), nc.at({0,0}), 1e-12);  // t[0][0] = 1
+    CHECK_NEAR(h.at({0,1}), nc.at({0,1}), 1e-12);  // t[1][0] = 4
+    CHECK_NEAR(h.at({1,0}), nc.at({1,0}), 1e-12);  // t[0][1] = 2
+    CHECK_NEAR(h.at({1,1}), nc.at({1,1}), 1e-12);  // t[1][1] = 5
+    CHECK_NEAR(h.at({2,0}), nc.at({2,0}), 1e-12);  // t[0][2] = 3
+    CHECK_NEAR(h.at({2,1}), nc.at({2,1}), 1e-12);  // t[1][2] = 6
 }
 
 void test_cuda_F5_to_cuda_on_cuda_is_fast_path() {
@@ -456,63 +473,83 @@ void test_cuda_F9_large_tensor_transfer() {
 // G — Unregistered dispatchers throw with predictable messages
 // ═════════════════════════════════════════════════════════════════════════════
 
-void test_cuda_G1_add_throws() {
-    std::cout << "[CUDA G1] add() on CUDA tensors throws — no binary dispatcher\n";
-    Tensor a = Tensor::zeros({4}, cuda_backend());
-    Tensor b = Tensor::zeros({4}, cuda_backend());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)a.add(b); }, "no binary dispatcher", msg);
-    CHECK(ok);
+void test_cuda_G1_add_computes_correctly() {
+    std::cout << "[CUDA G1] add() on CUDA tensors: {1,2,3,4} + {5,6,7,8} = {6,8,10,12}\n";
+    Tensor a = Tensor::from_data<double>({1,2,3,4}, {4}, cuda_backend());
+    Tensor b = Tensor::from_data<double>({5,6,7,8}, {4}, cuda_backend());
+    Tensor c = a.add(b);
+    CHECK(c.shape() == (std::vector<std::size_t>{4}));
+    CHECK_NEAR(c.at({0}),  6.0, 1e-12);
+    CHECK_NEAR(c.at({1}),  8.0, 1e-12);
+    CHECK_NEAR(c.at({2}), 10.0, 1e-12);
+    CHECK_NEAR(c.at({3}), 12.0, 1e-12);
 }
 
-void test_cuda_G2_mul_throws() {
-    std::cout << "[CUDA G2] mul() on CUDA tensors throws — no binary dispatcher\n";
-    Tensor a = Tensor::zeros({4}, cuda_backend());
-    Tensor b = Tensor::zeros({4}, cuda_backend());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)a.mul(b); }, "no binary dispatcher", msg);
-    CHECK(ok);
+void test_cuda_G2_mul_computes_correctly() {
+    std::cout << "[CUDA G2] mul() on CUDA tensors: {2,3,4,5} * {3,4,5,6} = {6,12,20,30}\n";
+    Tensor a = Tensor::from_data<double>({2,3,4,5}, {4}, cuda_backend());
+    Tensor b = Tensor::from_data<double>({3,4,5,6}, {4}, cuda_backend());
+    Tensor c = a.mul(b);
+    CHECK(c.shape() == (std::vector<std::size_t>{4}));
+    CHECK_NEAR(c.at({0}),  6.0, 1e-12);
+    CHECK_NEAR(c.at({1}), 12.0, 1e-12);
+    CHECK_NEAR(c.at({2}), 20.0, 1e-12);
+    CHECK_NEAR(c.at({3}), 30.0, 1e-12);
 }
 
-void test_cuda_G3_neg_throws() {
-    std::cout << "[CUDA G3] neg() on CUDA tensor throws — no unary dispatcher\n";
-    Tensor a = Tensor::zeros({4}, cuda_backend());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)a.neg(); }, "no unary dispatcher", msg);
-    CHECK(ok);
+void test_cuda_G3_neg_computes_correctly() {
+    std::cout << "[CUDA G3] neg() on CUDA tensor: {1,-2,3,-4} → {-1,2,-3,4}\n";
+    Tensor a = Tensor::from_data<double>({1,-2,3,-4}, {4}, cuda_backend());
+    Tensor c = a.neg();
+    CHECK_NEAR(c.at({0}), -1.0, 1e-12);
+    CHECK_NEAR(c.at({1}),  2.0, 1e-12);
+    CHECK_NEAR(c.at({2}), -3.0, 1e-12);
+    CHECK_NEAR(c.at({3}),  4.0, 1e-12);
 }
 
-void test_cuda_G4_exp_throws() {
-    std::cout << "[CUDA G4] exp() on CUDA tensor throws — no unary dispatcher\n";
-    Tensor a = Tensor::zeros({4}, cuda_backend());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)a.exp(); }, "no unary dispatcher", msg);
-    CHECK(ok);
+void test_cuda_G4_exp_computes_correctly() {
+    std::cout << "[CUDA G4] exp() on CUDA tensor: exp({0,1}) = {1.0, e}\n";
+    Tensor a = Tensor::from_data<double>({0.0, 1.0}, {2}, cuda_backend());
+    Tensor c = a.exp();
+    // exp(0) = 1.0, exp(1) = e ≈ 2.71828...
+    CHECK_NEAR(c.at({0}), 1.0,             1e-10);
+    CHECK_NEAR(c.at({1}), 2.718281828459,  1e-9);
 }
 
-void test_cuda_G5_sum_throws() {
-    std::cout << "[CUDA G5] sum() on CUDA tensor throws — no unary dispatcher (ReduceSum)\n";
-    Tensor a = Tensor::zeros({4}, cuda_backend());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)a.sum(); }, "no unary dispatcher", msg);
-    CHECK(ok);
+void test_cuda_G5_sum_computes_correctly() {
+    std::cout << "[CUDA G5] sum() on CUDA tensor: sum({1,2,3,4}) = 10.0\n";
+    Tensor a = Tensor::from_data<double>({1,2,3,4}, {4}, cuda_backend());
+    Tensor s = a.sum();
+    CHECK(s.numel() == 1);
+    // 1+2+3+4 = 10
+    CHECK_NEAR(s.at({0}), 10.0, 1e-10);
 }
 
-void test_cuda_G6_matmul_throws() {
-    std::cout << "[CUDA G6] matmul() on CUDA tensors throws — no matmul dispatcher\n";
-    Tensor a = Tensor::zeros({2,2}, cuda_backend());
-    Tensor b = Tensor::zeros({2,2}, cuda_backend());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)a.matmul(b); }, "matmul dispatcher not registered", msg);
-    CHECK(ok);
+void test_cuda_G6_matmul_computes_correctly() {
+    std::cout << "[CUDA G6] matmul() on CUDA tensors: [[1,2],[3,4]] @ [[5,6],[7,8]]\n";
+    Tensor a = Tensor::from_data<double>({1,2,3,4}, {2,2}, cuda_backend());
+    Tensor b = Tensor::from_data<double>({5,6,7,8}, {2,2}, cuda_backend());
+    Tensor c = a.matmul(b);
+    CHECK(c.shape() == (std::vector<std::size_t>{2, 2}));
+    // [0][0] = 1*5 + 2*7 = 19
+    // [0][1] = 1*6 + 2*8 = 22
+    // [1][0] = 3*5 + 4*7 = 43
+    // [1][1] = 3*6 + 4*8 = 50
+    CHECK_NEAR(c.at({0,0}), 19.0, 1e-10);
+    CHECK_NEAR(c.at({0,1}), 22.0, 1e-10);
+    CHECK_NEAR(c.at({1,0}), 43.0, 1e-10);
+    CHECK_NEAR(c.at({1,1}), 50.0, 1e-10);
 }
 
-void test_cuda_G7_relu_throws() {
-    std::cout << "[CUDA G7] relu() on CUDA tensor throws — no unary dispatcher\n";
-    Tensor a = Tensor::zeros({4}, cuda_backend());
-    std::string msg;
-    bool ok = throws_with([&]{ (void)a.relu(); }, "no unary dispatcher", msg);
-    CHECK(ok);
+void test_cuda_G7_relu_computes_correctly() {
+    std::cout << "[CUDA G7] relu() on CUDA tensor: {-1,0,2,-3} → {0,0,2,0}\n";
+    Tensor a = Tensor::from_data<double>({-1,0,2,-3}, {4}, cuda_backend());
+    Tensor c = a.relu();
+    // At x=0: output is 0.0 (right-hand derivative convention, matches PyTorch).
+    CHECK_NEAR(c.at({0}), 0.0, 1e-12);
+    CHECK_NEAR(c.at({1}), 0.0, 1e-12);
+    CHECK_NEAR(c.at({2}), 2.0, 1e-12);
+    CHECK_NEAR(c.at({3}), 0.0, 1e-12);
 }
 
 void test_cuda_G8_to_on_undefined_throws() {
@@ -655,27 +692,27 @@ void run_cuda_tests() {
     test_cuda_E5_transpose_dim_out_of_range_throws();
     test_cuda_E6_transpose_is_view_shares_buffer();
     test_cuda_E7_transpose_is_not_contiguous();
-    test_cuda_E8_contiguous_on_noncontiguous_cuda_throws();
+    test_cuda_E8_contiguous_on_noncontiguous_cuda_materialises();
 
     // F — Cross-device copy edge cases
     test_cuda_F1_cpu_to_cuda_to_cpu_round_trip();
     test_cuda_F2_2d_tensor_round_trip();
     test_cuda_F3_noncontiguous_cpu_to_cuda();
-    test_cuda_F4_noncontiguous_cuda_to_cpu_throws();
+    test_cuda_F4_noncontiguous_cuda_to_cpu_works();
     test_cuda_F5_to_cuda_on_cuda_is_fast_path();
     test_cuda_F6_to_cpu_on_cpu_is_fast_path();
     test_cuda_F7_to_does_not_preserve_requires_grad();
     test_cuda_F8_bytes_allocated_restored_after_transfer();
     test_cuda_F9_large_tensor_transfer();
 
-    // G — Unregistered dispatchers throw
-    test_cuda_G1_add_throws();
-    test_cuda_G2_mul_throws();
-    test_cuda_G3_neg_throws();
-    test_cuda_G4_exp_throws();
-    test_cuda_G5_sum_throws();
-    test_cuda_G6_matmul_throws();
-    test_cuda_G7_relu_throws();
+    // G — Compute correctness (kernels registered)
+    test_cuda_G1_add_computes_correctly();
+    test_cuda_G2_mul_computes_correctly();
+    test_cuda_G3_neg_computes_correctly();
+    test_cuda_G4_exp_computes_correctly();
+    test_cuda_G5_sum_computes_correctly();
+    test_cuda_G6_matmul_computes_correctly();
+    test_cuda_G7_relu_computes_correctly();
     test_cuda_G8_to_on_undefined_throws();
 
     // H — Streams
