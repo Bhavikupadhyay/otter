@@ -2,6 +2,7 @@
 #include "dispatcher.h"
 #include "cuda_kernel_engine.h"
 
+#include "cuda_index_utils.h"
 #include "otter/tensor.h"
 
 #include <cassert>
@@ -24,15 +25,10 @@ __global__ void copy_kernel(const double* __restrict__ src,
     std::size_t flat = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (flat >= numel) return;
 
-    std::size_t rem = flat;
-    std::size_t in_off = 0, out_off = 0;
-    for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
-        const std::size_t ud    = static_cast<std::size_t>(d);
-        const std::size_t coord = rem % shape[ud];
-        rem /= shape[ud];
-        in_off  += coord * src_strides[ud];
-        out_off += coord * dst_strides[ud];
-    }
+    std::size_t coords[8];
+    flat_to_coords(flat, shape, ndim, coords);
+    const std::size_t in_off  = coords_to_offset(coords, src_strides, ndim);
+    const std::size_t out_off = coords_to_offset(coords, dst_strides, ndim);
     dst[out_off] = src[in_off];
 }
 

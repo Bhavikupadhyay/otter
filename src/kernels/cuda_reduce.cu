@@ -2,6 +2,7 @@
 #include "dispatcher.h"
 #include "cuda_kernel_engine.h"
 
+#include "cuda_index_utils.h"
 #include "otter/tensor.h"
 #include "otter/detail/stride_utils.h"
 
@@ -44,16 +45,10 @@ __global__ void reduce_to_kernel(const double*      __restrict__ src,
     // Decompose flat index into per-dimension coordinates for the input tensor.
     // Max ndim supported: 8 (matches practical tensor rank limit in this library).
     std::size_t coords[8];
-    std::size_t tmp = flat;
-    for (int d = static_cast<int>(in_ndim) - 1; d >= 0; --d) {
-        const std::size_t ud = static_cast<std::size_t>(d);
-        coords[ud] = tmp % in_shape[ud];
-        tmp /= in_shape[ud];
-    }
+    flat_to_coords(flat, in_shape, in_ndim, coords);
 
     // Compute offset into the input using its actual strides (may include stride-0).
-    std::size_t in_off = 0;
-    for (std::size_t d = 0; d < in_ndim; ++d) in_off += coords[d] * in_strides[d];
+    const std::size_t in_off = coords_to_offset(coords, in_strides, in_ndim);
 
     // Map coords to the output tensor: drop prepended dims, clamp size-1 dims to 0.
     std::size_t out_off = 0;
