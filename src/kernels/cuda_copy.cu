@@ -70,8 +70,9 @@ void CUDAKernelEngine::cuda_copy(const Tensor& src, Tensor& dst) const {
         sp, dp, d_src_stride, d_dst_stride, d_shape, ndim, numel);
 
     if (default_spec_.sync_after) {
-        e = ::cudaDeviceSynchronize();
-        assert(e == cudaSuccess && "cuda_copy: cudaDeviceSynchronize failed"); (void)e;
+        const cudaError_t sync_err = ::cudaDeviceSynchronize();
+        assert(sync_err == cudaSuccess && "cuda_copy: cudaDeviceSynchronize failed");
+        (void)sync_err;
     }
 
     ::cudaFree(d_src_stride);

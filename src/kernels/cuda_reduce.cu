@@ -12,19 +12,33 @@
 
 namespace {
 
-// ReduceSum: each thread atomicAdd its element into the single output scalar.
-// Requires compute capability >= 6.0 for double atomicAdd.
+// Portable double-precision atomic add via CAS loop.
+// Hardware atomicAdd(double*) requires SM >= 6.0; this works on SM >= 2.0.
+// On SM >= 6.0 the compiler will still use the CAS path — performance
+// difference is negligible for the scatter sizes Otter uses.
+__device__ __forceinline__
+void atomic_add_f64(double* addr, double val) {
+    unsigned long long int* addr_ull =
+        reinterpret_cast<unsigned long long int*>(addr);
+    unsigned long long int old = *addr_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(addr_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+}
+
+// ReduceSum: each thread accumulates its element into the single output scalar.
 // out must be pre-zeroed (caller ensures this via Tensor::zeros).
 __global__ void reduce_sum_kernel(const double* __restrict__ a,
                                    double*                    out,
                                    std::size_t n) {
     std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < n) atomicAdd(out, static_cast<double>(a[i]));
+    if (i < n) atomic_add_f64(out, a[i]);
 }
 
 // ReduceTo: scatter-accumulate to target shape (broadcast backward kernel).
 // dst must be pre-zeroed (caller ensures this).
-// Requires compute capability >= 6.0 for double atomicAdd.
 //
 // in_ndim / in_shape / in_strides: the incoming gradient tensor (broadcast shape).
 // prepended: number of extra leading dims in src beyond out_ndim.
@@ -58,7 +72,7 @@ __global__ void reduce_to_kernel(const double*      __restrict__ src,
         }
     }
 
-    atomicAdd(dst + out_off, static_cast<double>(src[in_off]));
+    atomic_add_f64(dst + out_off, src[in_off]);
 }
 
 } // namespace
@@ -135,8 +149,9 @@ void CUDAKernelEngine::cuda_reduce_to(const Tensor& src, Tensor& dst) const {
                                                                 in_ndim, prepended, numel_in);
 
     if (default_spec_.sync_after) {
-        e = ::cudaDeviceSynchronize();
-        assert(e == cudaSuccess && "cuda_reduce_to: cudaDeviceSynchronize failed"); (void)e;
+        const cudaError_t sync_err = ::cudaDeviceSynchronize();
+        assert(sync_err == cudaSuccess && "cuda_reduce_to: cudaDeviceSynchronize failed");
+        (void)sync_err;
     }
 
     ::cudaFree(d_in_shape);

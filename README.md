@@ -1,6 +1,6 @@
 # OTTER
 
-OTTER is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, runs on a pluggable multi-backend kernel layer, and installs as a CMake static library. OTTER currently supports float64 on CPU.
+Otter is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, runs on a pluggable multi-backend kernel layer, and installs as a CMake static library. CPU and CUDA backends are both supported.
 
 ```cpp
 #include "otter/tensor.h"
@@ -88,21 +88,34 @@ Parameters are passed by value. The optimizer shares the same `Buffer` as the ca
 
 ---
 
+## CUDA backend
+
+```cpp
+#include "otter/backends/cuda.h"
+
+otter::Backend& cuda = otter::cuda_backend();
+
+otter::Tensor d = otter::Tensor::from_data<double>({1.0, 2.0, 3.0}, {3}, cuda);
+d.fill_(5.0);
+
+// Move between devices
+otter::Tensor host = d.cpu();
+otter::Tensor back = host.cuda();
+```
+
+`cuda_backend()` allocates via `cudaMallocManaged` (unified memory). `Tensor::cuda()` and `Tensor::cpu()` copy data across devices in one `cudaMemcpy` call. Non-contiguous CUDA tensors must be made contiguous before moving to CPU.
+
+Double-precision atomic accumulations (used by `sum` and `reduce_to`) use a portable CAS loop that works on SM 2.0+. Hardware `atomicAdd(double*)` (SM 6.0+) is not required.
+
+---
+
 ## Thread safety
 
-`grad()`, `zero_grad()`, and `accumulate_grad()` are mutex-protected via
-`GradAccumulator::mtx`. Concurrent reads and writes on the same leaf's gradient
-are safe from any thread.
+`grad()`, `zero_grad()`, and `accumulate_grad()` are mutex-protected via `GradAccumulator::mtx`. Concurrent reads and writes on the same leaf's gradient are safe from any thread.
 
-Concurrent `backward()` calls on separate computation graphs that share a leaf
-weight are safe. Each thread builds its own forward graph; only the leaf's
-`GradAccumulator` is shared. The canonical data-parallel pattern — N threads
-each computing loss and calling `backward()`, one shared weight tensor — works
-without external synchronization.
+Concurrent `backward()` calls on separate computation graphs that share a leaf weight are safe. The canonical data-parallel pattern — N threads each computing loss and calling `backward()`, one shared weight tensor — works without external synchronization.
 
-`SGD::step()` is not safe for concurrent calls on the same optimizer. `dispatch_scale`
-and `dispatch_axpy` write directly into parameter and velocity buffers. Call `step()`
-from one thread after all backward passes have joined.
+`SGD::step()` is not safe for concurrent calls on the same optimizer. `dispatch_scale` and `dispatch_axpy` write directly into parameter and velocity buffers. Call `step()` from one thread after all backward passes have joined.
 
 ---
 
@@ -110,9 +123,9 @@ from one thread after all backward passes have joined.
 
 `Tensor` is a value type. Copies share one `Buffer` via `shared_ptr` with independent shape, stride, and offset metadata. Views are zero-copy; `contiguous()` copies only when the strides are non-standard.
 
-`Backend` owns a `MemoryManager` and a `KernelEngine`. `cpu_backend()` is a program-lifetime singleton. Tensors bind to a backend at creation and hold a non-owning pointer; two tensors are on the same device iff their backend pointers are equal.
+`Backend` owns a `MemoryManager` and a `KernelEngine`. `cpu_backend()` and `cuda_backend()` are program-lifetime singletons. Tensors bind to a backend at creation. Two tensors are on the same device iff their backend pointers are equal.
 
-`KernelEngine` is a dispatcher registry. Each op family registers a typed `Dispatcher` struct in the backend constructor. Adding a kernel means adding a dispatcher and a `KernelType` entry; the registry interface does not change. Unary and binary dispatch go through the `KernelType` map. Parameterized in-place ops (`dispatch_fill`, `dispatch_scale`, `dispatch_axpy`) are direct virtual calls with scalar parameters.
+`KernelEngine` is a dispatcher registry. Each op family registers a typed `Dispatcher` struct in the backend constructor. Adding a kernel means adding a dispatcher and a `KernelType` entry; the registry interface does not change. The CPU and CUDA engines register independently — an op missing from CUDA throws a `std::runtime_error` with the exact dispatcher name, rather than silently falling back.
 
 `Buffer::data()` requires `Passkey<KernelEngine>`. Only `KernelEngine` subclasses can construct the passkey. Every raw-pointer access site is auditable with `grep Passkey<KernelEngine>`.
 
@@ -140,6 +153,8 @@ t.to_vector<double>();          // host-side copy in logical row-major order
 
 ## Build
 
+### CPU only
+
 ```bash
 cmake -B build/debug   -GNinja -DCMAKE_BUILD_TYPE=Debug   -DCMAKE_CXX_COMPILER=clang++
 cmake -B build/release -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
@@ -147,13 +162,29 @@ cmake --build build/debug
 ./build/debug/tests/otter_tests
 ```
 
-Debug builds enable `-fsanitize=address,undefined`. Both compile with `-Wall -Wextra -Werror`.
+### With CUDA (requires NVIDIA GPU and CUDA toolkit)
+
+```bash
+cmake -B build/cuda/debug   -GNinja -DCMAKE_BUILD_TYPE=Debug   \
+      -DCMAKE_CXX_COMPILER=clang++ -DOTTER_CUDA=ON
+cmake -B build/cuda/release -GNinja -DCMAKE_BUILD_TYPE=Release  \
+      -DCMAKE_CXX_COMPILER=clang++ -DOTTER_CUDA=ON
+cmake --build build/cuda/debug
+cmake --build build/cuda/release
+./build/cuda/debug/tests/otter_tests
+./build/cuda/release/tests/otter_tests
+```
+
+By default CMake targets the GPU in the machine. To target a specific architecture (e.g. for CI or cross-compilation), pass `-DCMAKE_CUDA_ARCHITECTURES=75` at configure time. Use `native` to auto-detect.
+
+Debug builds enable `-fsanitize=address,undefined` (CPU only; incompatible with the CUDA runtime). Both compile with `-Wall -Wextra -Werror` scoped to C++ only — nvcc uses its own error flags.
 
 ---
 
 ## Requirements
 
-- C++17 compiler (clang++ 10+)
+- C++17 compiler (Clang 10+ or GCC 9+)
 - CMake 3.20+
 - Ninja (optional, faster builds)
-- Linux or macOS (`mmap` and `posix_memalign` required)
+- Linux or macOS for CPU builds (`mmap` and `posix_memalign` required)
+- CUDA toolkit 11+ and an NVIDIA GPU (SM 2.0+) for `-DOTTER_CUDA=ON`
