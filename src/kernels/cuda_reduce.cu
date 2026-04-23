@@ -19,7 +19,7 @@ __global__ void reduce_sum_kernel(const double* __restrict__ a,
                                    double*                    out,
                                    std::size_t n) {
     std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < n) atomicAdd(out, a[i]);
+    if (i < n) atomicAdd(out, static_cast<double>(a[i]));
 }
 
 // ReduceTo: scatter-accumulate to target shape (broadcast backward kernel).
@@ -58,7 +58,7 @@ __global__ void reduce_to_kernel(const double*      __restrict__ src,
         }
     }
 
-    atomicAdd(dst + out_off, src[in_off]);
+    atomicAdd(dst + out_off, static_cast<double>(src[in_off]));
 }
 
 } // namespace
