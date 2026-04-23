@@ -25,10 +25,8 @@ __global__ void copy_kernel(const double* __restrict__ src,
     std::size_t flat = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (flat >= numel) return;
 
-    std::size_t coords[8];
-    flat_to_coords(flat, shape, ndim, coords);
-    const std::size_t in_off  = coords_to_offset(coords, src_strides, ndim);
-    const std::size_t out_off = coords_to_offset(coords, dst_strides, ndim);
+    std::size_t in_off, out_off;
+    flat_to_two_offsets(flat, shape, src_strides, dst_strides, ndim, in_off, out_off);
     dst[out_off] = src[in_off];
 }
 

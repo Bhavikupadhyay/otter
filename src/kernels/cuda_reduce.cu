@@ -2,7 +2,6 @@
 #include "dispatcher.h"
 #include "cuda_kernel_engine.h"
 
-#include "cuda_index_utils.h"
 #include "otter/tensor.h"
 #include "otter/detail/stride_utils.h"
 
@@ -42,20 +41,21 @@ __global__ void reduce_to_kernel(const double*      __restrict__ src,
     std::size_t flat = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (flat >= numel_in) return;
 
-    // Decompose flat index into per-dimension coordinates for the input tensor.
-    // Max ndim supported: 8 (matches practical tensor rank limit in this library).
-    std::size_t coords[8];
-    flat_to_coords(flat, in_shape, in_ndim, coords);
-
-    // Compute offset into the input using its actual strides (may include stride-0).
-    const std::size_t in_off = coords_to_offset(coords, in_strides, in_ndim);
-
-    // Map coords to the output tensor: drop prepended dims, clamp size-1 dims to 0.
-    std::size_t out_off = 0;
-    for (std::size_t d = prepended; d < in_ndim; ++d) {
-        const std::size_t od        = d - prepended;
-        const std::size_t out_coord = (out_shape[od] == 1) ? 0 : coords[d];
-        out_off += out_coord * out_strides[od];
+    // Single decomposition pass: compute in_off and out_off together.
+    // in_off uses in_strides directly (handles stride-0 broadcast dims).
+    // out_off skips prepended dims and clamps size-1 dims to 0.
+    std::size_t in_off = 0, out_off = 0;
+    std::size_t rem = flat;
+    for (int d = static_cast<int>(in_ndim) - 1; d >= 0; --d) {
+        const std::size_t ud    = static_cast<std::size_t>(d);
+        const std::size_t coord = rem % in_shape[ud];
+        rem                    /= in_shape[ud];
+        in_off                 += coord * in_strides[ud];
+        if (ud >= prepended) {
+            const std::size_t od        = ud - prepended;
+            const std::size_t out_coord = (out_shape[od] == 1) ? 0 : coord;
+            out_off                    += out_coord * out_strides[od];
+        }
     }
 
     atomicAdd(dst + out_off, src[in_off]);
@@ -89,7 +89,6 @@ void CUDAKernelEngine::cuda_reduce_to(const Tensor& src, Tensor& dst) const {
     const std::size_t in_ndim    = in_shape.size();
     assert(in_ndim >= out_ndim &&
            "cuda_reduce_to: src must have >= dims than dst");
-    assert(in_ndim <= 8 && "cuda_reduce_to: ndim > 8 not supported");
 
     const std::size_t prepended  = in_ndim - out_ndim;
     const std::size_t numel_in   = src.numel();
