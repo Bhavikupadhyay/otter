@@ -23,36 +23,37 @@ struct LaunchSpec {
 
 // CUDAKernelEngine — concrete KernelEngine for the CUDA backend.
 //
-// Registers one dispatcher per kernel; each calls back into a cuda_* method
-// below. cuda_* methods are member functions so they can reach the protected
-// raw_const<T> / raw_mutable<T> helpers from KernelEngine.
+// Binary and unary element-wise kernels are dispatched through template classes
+// (CUDAElementwiseBinaryKernel<F>, CUDAElementwiseUnaryKernel<F>) registered in
+// the constructor. Those classes call raw_ptr / mutable_ptr below instead of the
+// protected raw_const / raw_mutable directly, which would be inaccessible from a
+// non-member template class.
+//
+// The remaining kernel families (fill, copy, reduce, matmul, inplace) keep their
+// engine-method pattern until a follow-up sprint migrates them.
 //
 // Include dispatcher.h (not this header) when writing .cu files that call
 // raw_const / raw_mutable — dispatcher.h supplies the template bodies.
 class CUDAKernelEngine final : public KernelEngine {
 public:
-    CUDAKernelEngine();  // registers dispatchers; expands one kernel per sprint
+    CUDAKernelEngine();  // registers all dispatchers
 
     LaunchSpec default_spec_{};  // configurable; defaults match prior hardcoded values
+
+    // ── Forwarding accessors for template dispatcher classes ──────────────────
+    // Template dispatcher instances are not KernelEngine subclasses and therefore
+    // cannot call the protected raw_const / raw_mutable directly. These thin
+    // wrappers delegate through *this (legal as member functions).
+    template<typename T>
+    const T* raw_ptr(const Buffer& b) const { return raw_const<T>(b); }
+
+    template<typename T>
+    T* mutable_ptr(Buffer& b) const { return raw_mutable<T>(b); }
 
     // ── Kernel implementations — called by registered CUDA dispatchers only ───
     void   cuda_fill          (Tensor& t, double value) const;
     double cuda_element_read  (const Tensor& t, std::size_t flat_idx) const;
     void   cuda_bulk_host_read(const Tensor& src, std::vector<double>& dst) const;
-
-    // Binary element-wise
-    void cuda_add(const Tensor& a, const Tensor& b, Tensor& out) const;
-    void cuda_sub(const Tensor& a, const Tensor& b, Tensor& out) const;
-    void cuda_mul(const Tensor& a, const Tensor& b, Tensor& out) const;
-    void cuda_div(const Tensor& a, const Tensor& b, Tensor& out) const;
-
-    // Unary element-wise
-    void cuda_neg      (const Tensor& a, Tensor& out) const;
-    void cuda_exp      (const Tensor& a, Tensor& out) const;
-    void cuda_log      (const Tensor& a, Tensor& out) const;
-    void cuda_sqrt     (const Tensor& a, Tensor& out) const;
-    void cuda_relu     (const Tensor& a, Tensor& out) const;
-    void cuda_relu_mask(const Tensor& a, Tensor& out) const;
 
     // In-place
     void cuda_scale(Tensor& dst, double alpha) const;

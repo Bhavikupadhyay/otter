@@ -12,11 +12,8 @@ std::vector<Tensor> SumOperation::forward(const std::vector<Tensor>& inputs) {
     if (!inputs[0].defined())
         throw std::runtime_error("Sum: input Tensor is undefined");
 
-    // cpu_sum asserts is_contiguous. Materialise a contiguous copy first.
-    // For already-contiguous inputs contiguous() is a no-op (returns *this).
-    Tensor src    = inputs[0].contiguous();
-    Tensor result = Tensor::zeros({1}, src.backend(), src.dtype());
-    src.backend().kernel_engine()->dispatch_unary(KernelType::ReduceSum, src, result);
+    Tensor result = Tensor::zeros({1}, inputs[0].backend(), inputs[0].dtype());
+    inputs[0].backend().kernel_engine()->dispatch_unary(KernelType::ReduceSum, inputs[0], result);
     return {result};
 }
 

@@ -650,6 +650,75 @@ void test_cuda_I7_is_unique_false_for_reshape_view() {
 
 
 // ═════════════════════════════════════════════════════════════════════════════
+// J — Broadcast / strided element-wise kernels
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_J1_add_broadcast_row_to_matrix() {
+    std::cout << "[CUDA J1] add broadcast: {1,4} + {3,4} → {3,4}\n";
+    // execute() inserts BroadcastOp on a, producing a stride-0 view of shape {3,4}.
+    // CUDAElementwiseBinaryKernel takes the strided path.
+    Tensor a = Tensor::from_data<double>({1,1,1,1}, {1,4}, cuda_backend());
+    Tensor b = Tensor::from_data<double>({1,2,3,4,
+                                          5,6,7,8,
+                                          9,10,11,12}, {3,4}, cuda_backend());
+    Tensor c = a.add(b);
+    CHECK(c.shape() == (std::vector<std::size_t>{3,4}));
+    CHECK_NEAR(c.at({0,0}),  2.0, 1e-12);
+    CHECK_NEAR(c.at({0,1}),  3.0, 1e-12);
+    CHECK_NEAR(c.at({0,2}),  4.0, 1e-12);
+    CHECK_NEAR(c.at({0,3}),  5.0, 1e-12);
+    CHECK_NEAR(c.at({1,0}),  6.0, 1e-12);
+    CHECK_NEAR(c.at({1,1}),  7.0, 1e-12);
+    CHECK_NEAR(c.at({1,2}),  8.0, 1e-12);
+    CHECK_NEAR(c.at({1,3}),  9.0, 1e-12);
+    CHECK_NEAR(c.at({2,0}), 10.0, 1e-12);
+    CHECK_NEAR(c.at({2,1}), 11.0, 1e-12);
+    CHECK_NEAR(c.at({2,2}), 12.0, 1e-12);
+    CHECK_NEAR(c.at({2,3}), 13.0, 1e-12);
+}
+
+void test_cuda_J2_mul_broadcast_column() {
+    std::cout << "[CUDA J2] mul broadcast: {3,1} * {3,4} → {3,4}\n";
+    // BroadcastOp on a produces stride-0 view of shape {3,4} (stride 0 on dim 1).
+    Tensor a = Tensor::from_data<double>({1,2,3}, {3,1}, cuda_backend());
+    Tensor b = Tensor::from_data<double>({1,2,3,4,
+                                          1,1,1,1,
+                                          1,1,1,1}, {3,4}, cuda_backend());
+    Tensor c = a.mul(b);
+    CHECK(c.shape() == (std::vector<std::size_t>{3,4}));
+    CHECK_NEAR(c.at({0,0}), 1.0, 1e-12);
+    CHECK_NEAR(c.at({0,1}), 2.0, 1e-12);
+    CHECK_NEAR(c.at({0,2}), 3.0, 1e-12);
+    CHECK_NEAR(c.at({0,3}), 4.0, 1e-12);
+    CHECK_NEAR(c.at({1,0}), 2.0, 1e-12);
+    CHECK_NEAR(c.at({1,1}), 2.0, 1e-12);
+    CHECK_NEAR(c.at({1,2}), 2.0, 1e-12);
+    CHECK_NEAR(c.at({1,3}), 2.0, 1e-12);
+    CHECK_NEAR(c.at({2,0}), 3.0, 1e-12);
+    CHECK_NEAR(c.at({2,1}), 3.0, 1e-12);
+    CHECK_NEAR(c.at({2,2}), 3.0, 1e-12);
+    CHECK_NEAR(c.at({2,3}), 3.0, 1e-12);
+}
+
+void test_cuda_J3_neg_on_noncontiguous_view() {
+    std::cout << "[CUDA J3] neg on transposed (non-contiguous) view: {2,3} → transpose → neg\n";
+    // transpose(0,1) produces strides {1,3} — non-contiguous, no stride-0.
+    // CUDAElementwiseUnaryKernel takes the strided path.
+    Tensor a = Tensor::from_data<double>({1,2,3,4,5,6}, {2,3}, cuda_backend());
+    Tensor t = a.transpose(0, 1);  // shape {3,2}, strides {1,3}
+    CHECK(!t.is_contiguous());
+    Tensor n = t.neg();
+    CHECK(n.shape() == (std::vector<std::size_t>{3,2}));
+    CHECK_NEAR(n.at({0,0}), -1.0, 1e-12);
+    CHECK_NEAR(n.at({0,1}), -4.0, 1e-12);
+    CHECK_NEAR(n.at({1,0}), -2.0, 1e-12);
+    CHECK_NEAR(n.at({1,1}), -5.0, 1e-12);
+    CHECK_NEAR(n.at({2,0}), -3.0, 1e-12);
+    CHECK_NEAR(n.at({2,1}), -6.0, 1e-12);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Runner
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -727,6 +796,11 @@ void run_cuda_tests() {
     test_cuda_I5_is_unique_fresh_tensor();
     test_cuda_I6_is_unique_false_after_copy_restored_after_destroy();
     test_cuda_I7_is_unique_false_for_reshape_view();
+
+    // J — Broadcast / strided element-wise kernels
+    test_cuda_J1_add_broadcast_row_to_matrix();
+    test_cuda_J2_mul_broadcast_column();
+    test_cuda_J3_neg_on_noncontiguous_view();
 }
 
 } // namespace otter::test

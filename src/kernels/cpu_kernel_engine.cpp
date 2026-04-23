@@ -452,13 +452,13 @@ void CPUKernelEngine::cpu_relu_mask(const Tensor& a, Tensor& out) const {
 // ── Reduce-all (sum) ──────────────────────────────────────────────────────────
 
 void CPUKernelEngine::cpu_sum(const Tensor& a, Tensor& out) const {
-    // Caller (SumOperation::forward) is responsible for passing a contiguous
-    // input — the kernel must not allocate. Assert enforces the contract.
-    assert(a.is_contiguous() && "cpu_sum: input must be contiguous; call contiguous() before dispatch");
-    const double* in = raw_const<double>(a.buffer()) + a.offset();
+    // Materialise a contiguous copy if needed; for already-contiguous inputs
+    // Tensor::contiguous() is a no-op (returns *this — no allocation).
+    const Tensor  src = a.contiguous();
+    const double* in  = raw_const<double>(src.buffer()) + src.offset();
 
     double s = 0.0;
-    const std::size_t n = a.numel();
+    const std::size_t n = src.numel();
     for (std::size_t i = 0; i < n; ++i) s += in[i];
 
     double* dst = raw_mutable<double>(out.mutable_buffer()) + out.offset();

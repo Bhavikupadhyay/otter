@@ -80,11 +80,10 @@ __global__ void reduce_to_kernel(const double*      __restrict__ src,
 namespace otter {
 
 void CUDAKernelEngine::cuda_sum(const Tensor& a, Tensor& out) const {
-    assert(a.is_contiguous() &&
-           "cuda_sum: input must be contiguous; call contiguous() before dispatch");
-    const double*     pa    = raw_const<double>(a.buffer())             + a.offset();
-    double*           po    = raw_mutable<double>(out.mutable_buffer()) + out.offset();
-    const std::size_t n     = a.numel();
+    const Tensor      src   = a.contiguous();
+    const double*     pa    = raw_const<double>(src.buffer())             + src.offset();
+    double*           po    = raw_mutable<double>(out.mutable_buffer())   + out.offset();
+    const std::size_t n     = src.numel();
     const int         block = static_cast<int>(default_spec_.block_size);
     const int         grid  = static_cast<int>(
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
