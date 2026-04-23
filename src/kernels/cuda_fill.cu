@@ -23,16 +23,18 @@ namespace otter {
 void CUDAKernelEngine::cuda_fill(Tensor& t, double value) const {
     double*           ptr   = raw_mutable<double>(t.mutable_buffer());
     const std::size_t n     = t.numel();
-    const int         block = 256;
+    const int         block = static_cast<int>(default_spec_.block_size);
     const int         grid  = static_cast<int>((n + static_cast<std::size_t>(block) - 1)
                                                / static_cast<std::size_t>(block));
-    fill_kernel<<<grid, block>>>(ptr + t.offset(), value, n);
+    fill_kernel<<<grid, block, 0, default_spec_.stream>>>(ptr + t.offset(), value, n);
 
     // Synchronize so the fill is complete before returning. Callers (e.g. fill_())
     // may immediately read the tensor on the host via at() / to_vector().
-    cudaError_t err = ::cudaDeviceSynchronize();
-    assert(err == cudaSuccess && "CUDAKernelEngine::cuda_fill: cudaDeviceSynchronize failed");
-    (void)err;
+    if (default_spec_.sync_after) {
+        cudaError_t err = ::cudaDeviceSynchronize();
+        assert(err == cudaSuccess && "CUDAKernelEngine::cuda_fill: cudaDeviceSynchronize failed");
+        (void)err;
+    }
 }
 
 double CUDAKernelEngine::cuda_element_read(const Tensor& t, std::size_t flat_idx) const {

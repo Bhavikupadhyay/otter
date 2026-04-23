@@ -38,14 +38,17 @@ namespace otter {
 namespace {
 
 template<typename Op>
-void launch_unary(const double* pa, double* po, std::size_t n, Op op) {
-    const int block = 256;
+void launch_unary(const double* pa, double* po, std::size_t n, Op op,
+                  const LaunchSpec& spec) {
+    const int block = static_cast<int>(spec.block_size);
     const int grid  = static_cast<int>(
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
-    unary_kernel<<<grid, block>>>(pa, po, n, op);
-    cudaError_t err = ::cudaDeviceSynchronize();
-    assert(err == cudaSuccess && "cuda_unary: cudaDeviceSynchronize failed");
-    (void)err;
+    unary_kernel<<<grid, block, 0, spec.stream>>>(pa, po, n, op);
+    if (spec.sync_after) {
+        cudaError_t err = ::cudaDeviceSynchronize();
+        assert(err == cudaSuccess && "cuda_unary: cudaDeviceSynchronize failed");
+        (void)err;
+    }
 }
 
 } // namespace
@@ -54,14 +57,14 @@ void CUDAKernelEngine::cuda_neg(const Tensor& a, Tensor& out) const {
     assert(a.is_contiguous() && out.is_contiguous());
     launch_unary(raw_const<double>(a.buffer())             + a.offset(),
                  raw_mutable<double>(out.mutable_buffer()) + out.offset(),
-                 a.numel(), NegOp{});
+                 a.numel(), NegOp{}, default_spec_);
 }
 
 void CUDAKernelEngine::cuda_exp(const Tensor& a, Tensor& out) const {
     assert(a.is_contiguous() && out.is_contiguous());
     launch_unary(raw_const<double>(a.buffer())             + a.offset(),
                  raw_mutable<double>(out.mutable_buffer()) + out.offset(),
-                 a.numel(), ExpOp{});
+                 a.numel(), ExpOp{}, default_spec_);
 }
 
 void CUDAKernelEngine::cuda_log(const Tensor& a, Tensor& out) const {
@@ -69,7 +72,7 @@ void CUDAKernelEngine::cuda_log(const Tensor& a, Tensor& out) const {
     assert(a.is_contiguous() && out.is_contiguous());
     launch_unary(raw_const<double>(a.buffer())             + a.offset(),
                  raw_mutable<double>(out.mutable_buffer()) + out.offset(),
-                 a.numel(), LogOp{});
+                 a.numel(), LogOp{}, default_spec_);
 }
 
 void CUDAKernelEngine::cuda_sqrt(const Tensor& a, Tensor& out) const {
@@ -77,7 +80,7 @@ void CUDAKernelEngine::cuda_sqrt(const Tensor& a, Tensor& out) const {
     assert(a.is_contiguous() && out.is_contiguous());
     launch_unary(raw_const<double>(a.buffer())             + a.offset(),
                  raw_mutable<double>(out.mutable_buffer()) + out.offset(),
-                 a.numel(), SqrtOp{});
+                 a.numel(), SqrtOp{}, default_spec_);
 }
 
 void CUDAKernelEngine::cuda_relu(const Tensor& a, Tensor& out) const {
@@ -85,7 +88,7 @@ void CUDAKernelEngine::cuda_relu(const Tensor& a, Tensor& out) const {
     assert(a.is_contiguous() && out.is_contiguous());
     launch_unary(raw_const<double>(a.buffer())             + a.offset(),
                  raw_mutable<double>(out.mutable_buffer()) + out.offset(),
-                 a.numel(), ReluOp{});
+                 a.numel(), ReluOp{}, default_spec_);
 }
 
 void CUDAKernelEngine::cuda_relu_mask(const Tensor& a, Tensor& out) const {
@@ -93,7 +96,7 @@ void CUDAKernelEngine::cuda_relu_mask(const Tensor& a, Tensor& out) const {
     assert(a.is_contiguous() && out.is_contiguous());
     launch_unary(raw_const<double>(a.buffer())             + a.offset(),
                  raw_mutable<double>(out.mutable_buffer()) + out.offset(),
-                 a.numel(), ReluMaskOp{});
+                 a.numel(), ReluMaskOp{}, default_spec_);
 }
 
 } // namespace otter

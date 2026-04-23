@@ -69,14 +69,17 @@ void CUDAKernelEngine::cuda_matmul(const Tensor& a, const Tensor& b, Tensor& out
     const double* rhs = raw_const<double>(b.buffer())             + b.offset();
     double*       res = raw_mutable<double>(out.mutable_buffer()) + out.offset();
 
-    const int block = 256;
+    const int block = static_cast<int>(default_spec_.block_size);
     const int grid  = static_cast<int>(
         (total + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
-    matmul_kernel<<<grid, block>>>(lhs, rhs, res, M, N, K, bs_a, bs_b, bs_out, total);
+    matmul_kernel<<<grid, block, 0, default_spec_.stream>>>(
+        lhs, rhs, res, M, N, K, bs_a, bs_b, bs_out, total);
 
-    cudaError_t err = ::cudaDeviceSynchronize();
-    assert(err == cudaSuccess && "cuda_matmul: cudaDeviceSynchronize failed");
-    (void)err;
+    if (default_spec_.sync_after) {
+        cudaError_t err = ::cudaDeviceSynchronize();
+        assert(err == cudaSuccess && "cuda_matmul: cudaDeviceSynchronize failed");
+        (void)err;
+    }
 }
 
 } // namespace otter

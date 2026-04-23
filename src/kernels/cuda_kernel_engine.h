@@ -5,10 +5,21 @@
 
 #include "otter/kernel/kernel_engine.h"
 
+#include <cuda_runtime.h>
+
 namespace otter {
 
 class Tensor;
 class Buffer;
+
+// Launch parameters for CUDA kernels.
+// Defaults reproduce the original hardcoded behaviour (block=256, no stream,
+// sync after every launch). Override per-engine or per-call as needed.
+struct LaunchSpec {
+    std::size_t  block_size = 256;
+    cudaStream_t stream     = nullptr;
+    bool         sync_after = true;
+};
 
 // CUDAKernelEngine — concrete KernelEngine for the CUDA backend.
 //
@@ -21,6 +32,8 @@ class Buffer;
 class CUDAKernelEngine final : public KernelEngine {
 public:
     CUDAKernelEngine();  // registers dispatchers; expands one kernel per sprint
+
+    LaunchSpec default_spec_{};  // configurable; defaults match prior hardcoded values
 
     // ── Kernel implementations — called by registered CUDA dispatchers only ───
     void   cuda_fill          (Tensor& t, double value) const;

@@ -71,13 +71,15 @@ void CUDAKernelEngine::cuda_sum(const Tensor& a, Tensor& out) const {
     const double*     pa    = raw_const<double>(a.buffer())             + a.offset();
     double*           po    = raw_mutable<double>(out.mutable_buffer()) + out.offset();
     const std::size_t n     = a.numel();
-    const int         block = 256;
+    const int         block = static_cast<int>(default_spec_.block_size);
     const int         grid  = static_cast<int>(
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
-    reduce_sum_kernel<<<grid, block>>>(pa, po, n);
-    cudaError_t err = ::cudaDeviceSynchronize();
-    assert(err == cudaSuccess && "cuda_sum: cudaDeviceSynchronize failed");
-    (void)err;
+    reduce_sum_kernel<<<grid, block, 0, default_spec_.stream>>>(pa, po, n);
+    if (default_spec_.sync_after) {
+        cudaError_t err = ::cudaDeviceSynchronize();
+        assert(err == cudaSuccess && "cuda_sum: cudaDeviceSynchronize failed");
+        (void)err;
+    }
 }
 
 void CUDAKernelEngine::cuda_reduce_to(const Tensor& src, Tensor& dst) const {
@@ -124,16 +126,18 @@ void CUDAKernelEngine::cuda_reduce_to(const Tensor& src, Tensor& dst) const {
     const double* sp = raw_const<double>(src.buffer())             + src.offset();
     double*       dp = raw_mutable<double>(dst.mutable_buffer())   + dst.offset();
 
-    const int block = 256;
+    const int block = static_cast<int>(default_spec_.block_size);
     const int grid  = static_cast<int>(
         (numel_in + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
-    reduce_to_kernel<<<grid, block>>>(sp, dp,
-                                      d_in_shape, d_in_strides,
-                                      d_out_shape, d_out_strides,
-                                      in_ndim, prepended, numel_in);
+    reduce_to_kernel<<<grid, block, 0, default_spec_.stream>>>(sp, dp,
+                                                                d_in_shape, d_in_strides,
+                                                                d_out_shape, d_out_strides,
+                                                                in_ndim, prepended, numel_in);
 
-    e = ::cudaDeviceSynchronize();
-    assert(e == cudaSuccess && "cuda_reduce_to: cudaDeviceSynchronize failed"); (void)e;
+    if (default_spec_.sync_after) {
+        e = ::cudaDeviceSynchronize();
+        assert(e == cudaSuccess && "cuda_reduce_to: cudaDeviceSynchronize failed"); (void)e;
+    }
 
     ::cudaFree(d_in_shape);
     ::cudaFree(d_in_strides);

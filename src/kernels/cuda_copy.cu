@@ -63,13 +63,16 @@ void CUDAKernelEngine::cuda_copy(const Tensor& src, Tensor& dst) const {
     const double* sp = raw_const<double>(src.buffer())             + src.offset();
     double*       dp = raw_mutable<double>(dst.mutable_buffer())   + dst.offset();
 
-    const int block = 256;
+    const int block = static_cast<int>(default_spec_.block_size);
     const int grid  = static_cast<int>(
         (numel + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
-    copy_kernel<<<grid, block>>>(sp, dp, d_src_stride, d_dst_stride, d_shape, ndim, numel);
+    copy_kernel<<<grid, block, 0, default_spec_.stream>>>(
+        sp, dp, d_src_stride, d_dst_stride, d_shape, ndim, numel);
 
-    e = ::cudaDeviceSynchronize();
-    assert(e == cudaSuccess && "cuda_copy: cudaDeviceSynchronize failed"); (void)e;
+    if (default_spec_.sync_after) {
+        e = ::cudaDeviceSynchronize();
+        assert(e == cudaSuccess && "cuda_copy: cudaDeviceSynchronize failed"); (void)e;
+    }
 
     ::cudaFree(d_src_stride);
     ::cudaFree(d_dst_stride);

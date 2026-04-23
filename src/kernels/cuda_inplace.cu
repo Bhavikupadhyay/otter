@@ -31,28 +31,32 @@ void CUDAKernelEngine::cuda_scale(Tensor& dst, double alpha) const {
     assert(dst.is_contiguous());
     const std::size_t n     = dst.numel();
     double*           ptr   = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
-    const int         block = 256;
+    const int         block = static_cast<int>(default_spec_.block_size);
     const int         grid  = static_cast<int>(
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
-    scale_kernel<<<grid, block>>>(ptr, alpha, n);
-    cudaError_t err = ::cudaDeviceSynchronize();
-    assert(err == cudaSuccess && "cuda_scale: cudaDeviceSynchronize failed");
-    (void)err;
+    scale_kernel<<<grid, block, 0, default_spec_.stream>>>(ptr, alpha, n);
+    if (default_spec_.sync_after) {
+        cudaError_t err = ::cudaDeviceSynchronize();
+        assert(err == cudaSuccess && "cuda_scale: cudaDeviceSynchronize failed");
+        (void)err;
+    }
 }
 
 void CUDAKernelEngine::cuda_axpy(Tensor& dst, double alpha, const Tensor& src) const {
     assert(dst.is_contiguous() && src.is_contiguous());
     assert(dst.shape() == src.shape());
-    const std::size_t n    = dst.numel();
-    double*           dp   = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
-    const double*     sp   = raw_const<double>(src.buffer())           + src.offset();
-    const int         block = 256;
+    const std::size_t n     = dst.numel();
+    double*           dp    = raw_mutable<double>(dst.mutable_buffer()) + dst.offset();
+    const double*     sp    = raw_const<double>(src.buffer())           + src.offset();
+    const int         block = static_cast<int>(default_spec_.block_size);
     const int         grid  = static_cast<int>(
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
-    axpy_kernel<<<grid, block>>>(dp, alpha, sp, n);
-    cudaError_t err = ::cudaDeviceSynchronize();
-    assert(err == cudaSuccess && "cuda_axpy: cudaDeviceSynchronize failed");
-    (void)err;
+    axpy_kernel<<<grid, block, 0, default_spec_.stream>>>(dp, alpha, sp, n);
+    if (default_spec_.sync_after) {
+        cudaError_t err = ::cudaDeviceSynchronize();
+        assert(err == cudaSuccess && "cuda_axpy: cudaDeviceSynchronize failed");
+        (void)err;
+    }
 }
 
 } // namespace otter
