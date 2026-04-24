@@ -46,16 +46,20 @@ __global__ void matmul_kernel(const double* __restrict__ a,
 namespace otter {
 
 void CUDAKernelEngine::cuda_matmul(const Tensor& a, const Tensor& b, Tensor& out) const {
-    assert(a.is_contiguous() && b.is_contiguous() && out.is_contiguous() &&
-           "cuda_matmul: all inputs must be contiguous");
+    assert(out.is_contiguous() && "cuda_matmul: out must be contiguous");
     assert(out.shape().size() >= 2 &&
            "cuda_matmul: output tensor must be at least 2-dimensional");
+
+    // Materialise contiguous copies if either input is non-contiguous (e.g. transposed views
+    // produced by MatMulOperation::backward).  Matches the pattern used in cuda_sum.
+    const Tensor ca = a.is_contiguous() ? a : a.contiguous();
+    const Tensor cb = b.is_contiguous() ? b : b.contiguous();
 
     const auto& out_shape = out.shape();
     const std::size_t ndim = out_shape.size();
     const std::size_t M    = out_shape[ndim - 2];
     const std::size_t N    = out_shape[ndim - 1];
-    const std::size_t K    = a.shape()[ndim - 1];
+    const std::size_t K    = ca.shape()[ndim - 1];
 
     std::size_t batch = 1;
     for (std::size_t d = 0; d + 2 < ndim; ++d) batch *= out_shape[d];
@@ -65,8 +69,8 @@ void CUDAKernelEngine::cuda_matmul(const Tensor& a, const Tensor& b, Tensor& out
     const std::size_t bs_b   = K * N;
     const std::size_t bs_out = M * N;
 
-    const double* lhs = raw_const<double>(a.buffer())             + a.offset();
-    const double* rhs = raw_const<double>(b.buffer())             + b.offset();
+    const double* lhs = raw_const<double>(ca.buffer())            + ca.offset();
+    const double* rhs = raw_const<double>(cb.buffer())            + cb.offset();
     double*       res = raw_mutable<double>(out.mutable_buffer()) + out.offset();
 
     const int block = static_cast<int>(default_spec_.block_size);
