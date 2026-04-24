@@ -1,8 +1,11 @@
 #include "test_utils.h"
 
+#include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "otter/backends/cpu.h"
@@ -31,6 +34,18 @@ bool throws_with(F&& f, const char* fragment, std::string& out_msg) {
         return std::string(e.what()).find(fragment) != std::string::npos;
     }
     catch (...) { return false; }
+}
+
+// Compare two tensors element-wise to tolerance tol.
+// Uses to_vector<double>() which is device-agnostic (dispatch_bulk_host_read
+// does a single cudaMemcpy for CUDA tensors — no per-element round-trips).
+bool tensors_match(const Tensor& a, const Tensor& b, double tol = 1e-9) {
+    if (a.shape() != b.shape()) return false;
+    auto va = a.to_vector<double>();
+    auto vb = b.to_vector<double>();
+    for (std::size_t i = 0; i < va.size(); ++i)
+        if (std::abs(va[i] - vb[i]) >= tol) return false;
+    return true;
 }
 
 } // namespace
@@ -719,6 +734,385 @@ void test_cuda_J3_neg_on_noncontiguous_view() {
 
 
 // ═════════════════════════════════════════════════════════════════════════════
+// K — CUDA backward: core autograd
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_K1_add_backward() {
+    std::cout << "[CUDA K1] add backward: grad_a == grad_b == ones\n";
+    // a={1,2,3}, b={4,5,6}; loss = sum(a+b)
+    // d(loss)/da_i = 1, d(loss)/db_i = 1 for all i
+    Tensor a = Tensor::from_data<double>({1,2,3}, {3}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({4,5,6}, {3}, cuda_backend(), /*requires_grad=*/true);
+    a.add(b).sum().backward();
+    CHECK(a.grad().defined());
+    CHECK(b.grad().defined());
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK_NEAR(a.grad().at({i}), 1.0, 1e-9);
+        CHECK_NEAR(b.grad().at({i}), 1.0, 1e-9);
+    }
+}
+
+void test_cuda_K2_mul_backward() {
+    std::cout << "[CUDA K2] mul backward: grad_a == b, grad_b == a (product rule)\n";
+    // a={2,3,4}, b={5,6,7}; loss = sum(a*b)
+    // d(loss)/da_i = b_i, d(loss)/db_i = a_i
+    Tensor a = Tensor::from_data<double>({2,3,4}, {3}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({5,6,7}, {3}, cuda_backend(), /*requires_grad=*/true);
+    a.mul(b).sum().backward();
+    CHECK_NEAR(a.grad().at({0}), 5.0, 1e-9);  // grad_a[i] = b[i]
+    CHECK_NEAR(a.grad().at({1}), 6.0, 1e-9);
+    CHECK_NEAR(a.grad().at({2}), 7.0, 1e-9);
+    CHECK_NEAR(b.grad().at({0}), 2.0, 1e-9);  // grad_b[i] = a[i]
+    CHECK_NEAR(b.grad().at({1}), 3.0, 1e-9);
+    CHECK_NEAR(b.grad().at({2}), 4.0, 1e-9);
+}
+
+void test_cuda_K3_sum_backward_fans_scalar() {
+    std::cout << "[CUDA K3] sum backward: scalar grad fans out — all grad_a == 1\n";
+    // loss = sum(a), d(loss)/da_ij = 1 for all i,j
+    Tensor a = Tensor::from_data<double>({2,4,6,8}, {2,2}, cuda_backend(), /*requires_grad=*/true);
+    a.sum().backward();
+    CHECK_NEAR(a.grad().at({0,0}), 1.0, 1e-9);
+    CHECK_NEAR(a.grad().at({0,1}), 1.0, 1e-9);
+    CHECK_NEAR(a.grad().at({1,0}), 1.0, 1e-9);
+    CHECK_NEAR(a.grad().at({1,1}), 1.0, 1e-9);
+}
+
+void test_cuda_K4_neg_backward() {
+    std::cout << "[CUDA K4] neg backward: grad_a == -1 everywhere\n";
+    // loss = sum(-a), d(loss)/da_i = -1
+    Tensor a = Tensor::from_data<double>({1,2,3}, {3}, cuda_backend(), /*requires_grad=*/true);
+    a.neg().sum().backward();
+    for (std::size_t i = 0; i < 3; ++i)
+        CHECK_NEAR(a.grad().at({i}), -1.0, 1e-9);
+}
+
+void test_cuda_K5_chain_backward() {
+    std::cout << "[CUDA K5] chain backward: a.mul(b).add(c).sum() — mul then add\n";
+    // t = a * b, u = t + c, loss = sum(u)
+    // grad_c = 1 (add pass-through), grad_t = 1
+    // grad_a = grad_t * b = b, grad_b = grad_t * a = a
+    Tensor a = Tensor::from_data<double>({1,2}, {2}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({3,4}, {2}, cuda_backend(), /*requires_grad=*/true);
+    Tensor c = Tensor::from_data<double>({5,6}, {2}, cuda_backend(), /*requires_grad=*/true);
+    a.mul(b).add(c).sum().backward();
+    CHECK_NEAR(a.grad().at({0}), 3.0, 1e-9);  // grad_a = b = {3,4}
+    CHECK_NEAR(a.grad().at({1}), 4.0, 1e-9);
+    CHECK_NEAR(b.grad().at({0}), 1.0, 1e-9);  // grad_b = a = {1,2}
+    CHECK_NEAR(b.grad().at({1}), 2.0, 1e-9);
+    CHECK_NEAR(c.grad().at({0}), 1.0, 1e-9);  // grad_c = 1
+    CHECK_NEAR(c.grad().at({1}), 1.0, 1e-9);
+}
+
+void test_cuda_K6_no_grad_guard_blocks_graph() {
+    std::cout << "[CUDA K6] NoGradGuard blocks graph on CUDA — c is leaf, no requires_grad\n";
+    Tensor a = Tensor::from_data<double>({1,2}, {2}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({3,4}, {2}, cuda_backend());
+    Tensor c;
+    {
+        NoGradGuard ng;
+        c = a.add(b);
+    }
+    CHECK(!c.requires_grad());
+    CHECK(c.is_leaf());
+}
+
+void test_cuda_K7_accumulate_grad_two_branches() {
+    std::cout << "[CUDA K7] diamond: a feeds relu and exp branches — grad accumulates both via axpy\n";
+    // a = {1,2}; b1 = relu(a); b2 = exp(a); loss = sum(b1 + b2)
+    // Both a[0]=1 and a[1]=2 are positive, so relu mask = {1,1}
+    // grad_a[i] = relu_mask[i] * 1.0 + exp(a[i]) * 1.0
+    //           = 1.0 + exp(a[i])
+    Tensor a = Tensor::from_data<double>({1.0, 2.0}, {2}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b1 = a.relu();
+    Tensor b2 = a.exp();
+    b1.add(b2).sum().backward();
+    // Second accumulate_grad call uses cuda_axpy to add into the existing CUDA grad buffer
+    CHECK_NEAR(a.grad().at({0}), 1.0 + std::exp(1.0), 1e-9);  // 1 + e ≈ 3.71828
+    CHECK_NEAR(a.grad().at({1}), 1.0 + std::exp(2.0), 1e-9);  // 1 + e² ≈ 8.38906
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// L — CUDA backward: math ops
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_L1_sub_backward() {
+    std::cout << "[CUDA L1] sub backward: grad_a == 1, grad_b == -1\n";
+    // loss = sum(a - b), d/da_i = 1, d/db_i = -1
+    Tensor a = Tensor::from_data<double>({3,1}, {2}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({1,2}, {2}, cuda_backend(), /*requires_grad=*/true);
+    a.sub(b).sum().backward();
+    CHECK_NEAR(a.grad().at({0}),  1.0, 1e-9);
+    CHECK_NEAR(a.grad().at({1}),  1.0, 1e-9);
+    CHECK_NEAR(b.grad().at({0}), -1.0, 1e-9);
+    CHECK_NEAR(b.grad().at({1}), -1.0, 1e-9);
+}
+
+void test_cuda_L2_exp_backward() {
+    std::cout << "[CUDA L2] exp backward: grad_a[i] == exp(a[i])\n";
+    // loss = sum(exp(a)), d(loss)/da_i = exp(a_i)
+    Tensor a = Tensor::from_data<double>({0.0, 1.0}, {2}, cuda_backend(), /*requires_grad=*/true);
+    a.exp().sum().backward();
+    CHECK_NEAR(a.grad().at({0}), std::exp(0.0), 1e-9);  // exp(0) = 1.0
+    CHECK_NEAR(a.grad().at({1}), std::exp(1.0), 1e-9);  // exp(1) ≈ 2.71828
+}
+
+void test_cuda_L3_log_backward() {
+    std::cout << "[CUDA L3] log backward: grad_a[i] == 1/a[i]\n";
+    // loss = sum(log(a)), d(loss)/da_i = 1/a_i
+    Tensor a = Tensor::from_data<double>({2.0, 4.0}, {2}, cuda_backend(), /*requires_grad=*/true);
+    a.log().sum().backward();
+    CHECK_NEAR(a.grad().at({0}), 0.5,  1e-9);  // 1/2.0 = 0.5
+    CHECK_NEAR(a.grad().at({1}), 0.25, 1e-9);  // 1/4.0 = 0.25
+}
+
+void test_cuda_L4_relu_backward() {
+    std::cout << "[CUDA L4] relu backward: grad is 1 where a>0, 0 elsewhere\n";
+    // a={3,-5,0}; mask = {1,0,0}; d(loss)/da_i = mask_i * 1.0 (sum upstream)
+    Tensor a = Tensor::from_data<double>({3.0,-5.0,0.0}, {3}, cuda_backend(), /*requires_grad=*/true);
+    a.relu().sum().backward();
+    CHECK_NEAR(a.grad().at({0}), 1.0, 1e-9);  // 3.0 > 0 → 1
+    CHECK_NEAR(a.grad().at({1}), 0.0, 1e-9);  // -5.0 < 0 → 0
+    CHECK_NEAR(a.grad().at({2}), 0.0, 1e-9);  // 0.0, subgradient = 0 (PyTorch convention)
+}
+
+void test_cuda_L5_matmul_backward_2x2() {
+    std::cout << "[CUDA L5] matmul backward: A=2x2, B=identity; grad_A==ones, grad_B==A^T@ones\n";
+    // A = [[1,2],[3,4]], B = [[1,0],[0,1]] (identity)
+    // C = A @ B = [[1,2],[3,4]]; loss = sum(C) = 10
+    // grad_out = [[1,1],[1,1]] (from sum backward)
+    // grad_A = grad_out @ B^T = [[1,1],[1,1]] @ [[1,0],[0,1]] = [[1,1],[1,1]]
+    // grad_B = A^T @ grad_out = [[1,3],[2,4]] @ [[1,1],[1,1]] = [[4,4],[6,6]]
+    Tensor A = Tensor::from_data<double>({1,2,3,4}, {2,2}, cuda_backend(), /*requires_grad=*/true);
+    Tensor B = Tensor::from_data<double>({1,0,0,1}, {2,2}, cuda_backend(), /*requires_grad=*/true);
+    A.matmul(B).sum().backward();
+    CHECK_NEAR(A.grad().at({0,0}), 1.0, 1e-9);
+    CHECK_NEAR(A.grad().at({0,1}), 1.0, 1e-9);
+    CHECK_NEAR(A.grad().at({1,0}), 1.0, 1e-9);
+    CHECK_NEAR(A.grad().at({1,1}), 1.0, 1e-9);
+    CHECK_NEAR(B.grad().at({0,0}), 4.0, 1e-9);  // A^T[0,:] dot ones_col = 1+3=4
+    CHECK_NEAR(B.grad().at({0,1}), 4.0, 1e-9);
+    CHECK_NEAR(B.grad().at({1,0}), 6.0, 1e-9);  // A^T[1,:] dot ones_col = 2+4=6
+    CHECK_NEAR(B.grad().at({1,1}), 6.0, 1e-9);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// M — CUDA backward: broadcast
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_M1_broadcast_add_backward_row() {
+    std::cout << "[CUDA M1] broadcast add backward: {1,4}+{3,4} — grad_a reduces to {1,4}\n";
+    // a={1,1,1,1} shape {1,4}; b shape {3,4}
+    // BroadcastOp creates stride-0 view of a over 3 rows.
+    // Each a[0,j] contributes to 3 output elements → grad_a[0,j] = 3.0 (ReduceTo backward)
+    Tensor a = Tensor::from_data<double>({1,1,1,1}, {1,4}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({1,2,3,4,
+                                          5,6,7,8,
+                                          9,10,11,12}, {3,4}, cuda_backend());
+    a.add(b).sum().backward();
+    CHECK(a.grad().shape() == (std::vector<std::size_t>{1,4}));
+    // a[0,j] appears in 3 rows of output → gradient sums to 3.0
+    CHECK_NEAR(a.grad().at({0,0}), 3.0, 1e-9);
+    CHECK_NEAR(a.grad().at({0,1}), 3.0, 1e-9);
+    CHECK_NEAR(a.grad().at({0,2}), 3.0, 1e-9);
+    CHECK_NEAR(a.grad().at({0,3}), 3.0, 1e-9);
+}
+
+void test_cuda_M2_broadcast_mul_backward_col() {
+    std::cout << "[CUDA M2] broadcast mul backward: {3,1}*{3,4} — grad_a reduces to {3,1}\n";
+    // a={1,2,3} shape {3,1}; b shape {3,4}
+    // BroadcastOp creates stride-0 view of a on dim 1.
+    // MulOp backward: grad for a_broadcast[i,j] = b[i,j] * upstream
+    // ReduceTo backward (cols): grad_a[i,0] = sum_j(b[i,j])
+    //   row 0: 1+2+3+4 = 10, row 1: 1+1+1+1 = 4, row 2: 1+1+1+1 = 4
+    Tensor a = Tensor::from_data<double>({1,2,3}, {3,1}, cuda_backend(), /*requires_grad=*/true);
+    Tensor b = Tensor::from_data<double>({1,2,3,4,
+                                          1,1,1,1,
+                                          1,1,1,1}, {3,4}, cuda_backend());
+    a.mul(b).sum().backward();
+    CHECK(a.grad().shape() == (std::vector<std::size_t>{3,1}));
+    CHECK_NEAR(a.grad().at({0,0}), 10.0, 1e-9);
+    CHECK_NEAR(a.grad().at({1,0}),  4.0, 1e-9);
+    CHECK_NEAR(a.grad().at({2,0}),  4.0, 1e-9);
+}
+
+void test_cuda_M3_broadcast_backward_memory_clean() {
+    std::cout << "[CUDA M3] broadcast backward — bytes_allocated == 0 after all tensors destruct\n";
+    {
+        Tensor a = Tensor::from_data<double>({1,1,1,1}, {1,4}, cuda_backend(), /*requires_grad=*/true);
+        Tensor b = Tensor::from_data<double>({1,2,3,4,
+                                              5,6,7,8,
+                                              9,10,11,12}, {3,4}, cuda_backend());
+        a.add(b).sum().backward();
+    }
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == 0);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// N — CPU/CUDA numerical parity
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_N1_add_parity() {
+    std::cout << "[CUDA N1] add forward+backward: CUDA results match CPU\n";
+    const std::vector<double> da = {1,2,3};
+    const std::vector<double> db = {4,5,6};
+
+    Tensor ca = Tensor::from_data<double>(da, {3}, cpu_backend(), /*requires_grad=*/true);
+    Tensor cb = Tensor::from_data<double>(db, {3}, cpu_backend(), /*requires_grad=*/true);
+    Tensor closs = ca.add(cb).sum();
+    closs.backward();
+
+    Tensor ga = Tensor::from_data<double>(da, {3}, cuda_backend(), /*requires_grad=*/true);
+    Tensor gb = Tensor::from_data<double>(db, {3}, cuda_backend(), /*requires_grad=*/true);
+    Tensor gloss = ga.add(gb).sum();
+    gloss.backward();
+
+    CHECK(tensors_match(closs, gloss));
+    CHECK(tensors_match(ca.grad(), ga.grad()));
+    CHECK(tensors_match(cb.grad(), gb.grad()));
+}
+
+void test_cuda_N2_mul_parity() {
+    std::cout << "[CUDA N2] mul forward+backward: CUDA results match CPU\n";
+    const std::vector<double> da = {2,3,4};
+    const std::vector<double> db = {5,6,7};
+
+    Tensor ca = Tensor::from_data<double>(da, {3}, cpu_backend(), /*requires_grad=*/true);
+    Tensor cb = Tensor::from_data<double>(db, {3}, cpu_backend(), /*requires_grad=*/true);
+    ca.mul(cb).sum().backward();
+
+    Tensor ga = Tensor::from_data<double>(da, {3}, cuda_backend(), /*requires_grad=*/true);
+    Tensor gb = Tensor::from_data<double>(db, {3}, cuda_backend(), /*requires_grad=*/true);
+    ga.mul(gb).sum().backward();
+
+    CHECK(tensors_match(ca.grad(), ga.grad()));  // grad_a = b = {5,6,7}
+    CHECK(tensors_match(cb.grad(), gb.grad()));  // grad_b = a = {2,3,4}
+}
+
+void test_cuda_N3_neg_exp_chain_parity() {
+    std::cout << "[CUDA N3] neg+exp chain forward+backward: CUDA matches CPU\n";
+    // loss = sum(exp(-a)); grad_a[i] = -exp(-a[i])
+    const std::vector<double> da = {0.5, 1.0, 2.0};
+
+    Tensor ca = Tensor::from_data<double>(da, {3}, cpu_backend(), /*requires_grad=*/true);
+    Tensor closs = ca.neg().exp().sum();
+    closs.backward();
+
+    Tensor ga = Tensor::from_data<double>(da, {3}, cuda_backend(), /*requires_grad=*/true);
+    Tensor gloss = ga.neg().exp().sum();
+    gloss.backward();
+
+    CHECK(tensors_match(closs, gloss));
+    CHECK(tensors_match(ca.grad(), ga.grad()));  // -exp(-a[i]): {-e^-0.5, -e^-1, -e^-2}
+}
+
+void test_cuda_N4_broadcast_add_parity() {
+    std::cout << "[CUDA N4] broadcast add forward+backward: CUDA matches CPU (strided path)\n";
+    // Exercises the strided broadcast kernel end-to-end through backward
+    const std::vector<double> da = {1,1,1,1};
+    const std::vector<double> db = {1,2,3,4, 5,6,7,8, 9,10,11,12};
+
+    Tensor ca = Tensor::from_data<double>(da, {1,4}, cpu_backend(), /*requires_grad=*/true);
+    Tensor cb = Tensor::from_data<double>(db, {3,4}, cpu_backend());
+    ca.add(cb).sum().backward();
+
+    Tensor ga = Tensor::from_data<double>(da, {1,4}, cuda_backend(), /*requires_grad=*/true);
+    Tensor gb = Tensor::from_data<double>(db, {3,4}, cuda_backend());
+    ga.add(gb).sum().backward();
+
+    CHECK(tensors_match(ca.grad(), ga.grad()));  // expected {3,3,3,3} on both
+}
+
+void test_cuda_N5_matmul_parity() {
+    std::cout << "[CUDA N5] matmul forward+backward: CUDA matches CPU\n";
+    const std::vector<double> dA = {1,2,3,4};
+    const std::vector<double> dB = {1,0,0,1};  // identity
+
+    Tensor cA = Tensor::from_data<double>(dA, {2,2}, cpu_backend(), /*requires_grad=*/true);
+    Tensor cB = Tensor::from_data<double>(dB, {2,2}, cpu_backend(), /*requires_grad=*/true);
+    cA.matmul(cB).sum().backward();
+
+    Tensor gA = Tensor::from_data<double>(dA, {2,2}, cuda_backend(), /*requires_grad=*/true);
+    Tensor gB = Tensor::from_data<double>(dB, {2,2}, cuda_backend(), /*requires_grad=*/true);
+    gA.matmul(gB).sum().backward();
+
+    CHECK(tensors_match(cA.grad(), gA.grad()));  // [[1,1],[1,1]]
+    CHECK(tensors_match(cB.grad(), gB.grad()));  // [[4,4],[6,6]]
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// O — CUDA concurrency: accumulate_grad seriality
+// ═════════════════════════════════════════════════════════════════════════════
+
+void test_cuda_O1_concurrent_grad_reads_after_backward() {
+    std::cout << "[CUDA O1] N threads read w.grad() concurrently after backward — no data race\n";
+    // backward() completes on the main thread first; then all reader threads start.
+    // grad(w) == {1,1} from the sum, regardless of read ordering.
+    Tensor w = Tensor::from_data<double>({5.0, 6.0}, {2}, cuda_backend(), /*requires_grad=*/true);
+    w.add(Tensor::zeros({2}, cuda_backend())).sum().backward();
+
+    constexpr std::size_t N = 8;
+    std::vector<double> val0(N, -1.0);
+    std::vector<double> val1(N, -1.0);
+    std::vector<std::thread> threads;
+    threads.reserve(N);
+
+    for (std::size_t i = 0; i < N; ++i) {
+        threads.emplace_back([&, i]() {
+            val0[i] = w.grad().at({0});
+            val1[i] = w.grad().at({1});
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    for (std::size_t i = 0; i < N; ++i) {
+        CHECK_NEAR(val0[i], 1.0, 1e-9);
+        CHECK_NEAR(val1[i], 1.0, 1e-9);
+    }
+}
+
+void test_cuda_O2_concurrent_backward_shared_cuda_leaf() {
+    std::cout << "[CUDA O2] N threads backward over shared CUDA leaf — grad accumulates correctly\n";
+    // Each thread: loss = sum(w * [2,2]) → d(loss)/dw = {2,2} per thread.
+    // After N threads: w.grad() == {N*2, N*2}.
+    // accumulate_grad mutex serializes concurrent axpy calls into w's CUDA grad buffer.
+    constexpr int N = 4;
+    Tensor w = Tensor::from_data<double>({3.0, 1.0}, {2}, cuda_backend(), /*requires_grad=*/true);
+
+    std::atomic<int>  built{0};
+    std::atomic<bool> go{false};
+
+    std::vector<std::thread> threads;
+    threads.reserve(N);
+
+    for (int i = 0; i < N; ++i) {
+        threads.emplace_back([&]() {
+            // Each thread owns its own graph; w is the shared leaf.
+            Tensor scale = Tensor::from_data<double>({2.0, 2.0}, {2}, cuda_backend());
+            Tensor loss  = w.mul(scale).sum();
+
+            built.fetch_add(1, std::memory_order_release);
+            while (!go.load(std::memory_order_acquire)) { /* spin */ }
+
+            loss.backward();
+        });
+    }
+
+    while (built.load(std::memory_order_acquire) < N) { /* spin */ }
+    go.store(true, std::memory_order_release);
+    for (auto& t : threads) t.join();
+
+    const double expected = static_cast<double>(N) * 2.0;
+    CHECK_NEAR(w.grad().at({0}), expected, 1e-9);
+    CHECK_NEAR(w.grad().at({1}), expected, 1e-9);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Runner
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -801,6 +1195,38 @@ void run_cuda_tests() {
     test_cuda_J1_add_broadcast_row_to_matrix();
     test_cuda_J2_mul_broadcast_column();
     test_cuda_J3_neg_on_noncontiguous_view();
+
+    // K — CUDA backward: core autograd
+    test_cuda_K1_add_backward();
+    test_cuda_K2_mul_backward();
+    test_cuda_K3_sum_backward_fans_scalar();
+    test_cuda_K4_neg_backward();
+    test_cuda_K5_chain_backward();
+    test_cuda_K6_no_grad_guard_blocks_graph();
+    test_cuda_K7_accumulate_grad_two_branches();
+
+    // L — CUDA backward: math ops
+    test_cuda_L1_sub_backward();
+    test_cuda_L2_exp_backward();
+    test_cuda_L3_log_backward();
+    test_cuda_L4_relu_backward();
+    test_cuda_L5_matmul_backward_2x2();
+
+    // M — CUDA backward: broadcast
+    test_cuda_M1_broadcast_add_backward_row();
+    test_cuda_M2_broadcast_mul_backward_col();
+    test_cuda_M3_broadcast_backward_memory_clean();
+
+    // N — CPU/CUDA numerical parity
+    test_cuda_N1_add_parity();
+    test_cuda_N2_mul_parity();
+    test_cuda_N3_neg_exp_chain_parity();
+    test_cuda_N4_broadcast_add_parity();
+    test_cuda_N5_matmul_parity();
+
+    // O — CUDA concurrency: accumulate_grad seriality
+    test_cuda_O1_concurrent_grad_reads_after_backward();
+    test_cuda_O2_concurrent_backward_shared_cuda_leaf();
 }
 
 } // namespace otter::test
