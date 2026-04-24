@@ -3,6 +3,7 @@
 #include "cuda_kernel_engine.h"
 
 #include "otter/tensor.h"
+#include "otter/detail/cuda_runtime_mutex.h"
 
 #include <cassert>
 #include <cstddef>
@@ -36,6 +37,7 @@ void CUDAKernelEngine::cuda_scale(Tensor& dst, double alpha) const {
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
     scale_kernel<<<grid, block, 0, default_spec_.stream>>>(ptr, alpha, n);
     if (default_spec_.sync_after) {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         cudaError_t err = ::cudaDeviceSynchronize();
         assert(err == cudaSuccess && "cuda_scale: cudaDeviceSynchronize failed");
         (void)err;
@@ -53,6 +55,7 @@ void CUDAKernelEngine::cuda_axpy(Tensor& dst, double alpha, const Tensor& src) c
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
     axpy_kernel<<<grid, block, 0, default_spec_.stream>>>(dp, alpha, sp, n);
     if (default_spec_.sync_after) {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         cudaError_t err = ::cudaDeviceSynchronize();
         assert(err == cudaSuccess && "cuda_axpy: cudaDeviceSynchronize failed");
         (void)err;

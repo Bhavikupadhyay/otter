@@ -1,6 +1,7 @@
 #include "otter/tensor.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <iostream>
@@ -47,6 +48,23 @@ Backend& backend_for_device(Device d) {
     default:
         throw std::runtime_error("Tensor::to(): unsupported device");
     }
+}
+
+std::shared_ptr<GradAccumulator> load_grad_accum(
+    const std::shared_ptr<GradAccumulator>* p) {
+    return std::atomic_load(p);
+}
+
+std::shared_ptr<GradAccumulator> get_or_create_grad_accum(
+    std::shared_ptr<GradAccumulator>* p) {
+    std::shared_ptr<GradAccumulator> acc = std::atomic_load(p);
+    if (acc) return acc;
+
+    auto fresh = std::make_shared<GradAccumulator>();
+    if (!std::atomic_compare_exchange_strong(p, &acc, fresh)) {
+        return acc;
+    }
+    return fresh;
 }
 
 } // namespace
@@ -242,9 +260,10 @@ void Tensor::fill_(double value) {
 // ── Autograd methods ──────────────────────────────────────────────────────────
 
 Tensor Tensor::grad() const noexcept {
-    if (!grad_accum_) return Tensor{};
-    std::lock_guard<std::mutex> lock(grad_accum_->mtx);
-    return grad_accum_->grad_tensor;  // returns by value; lock releases before caller uses the copy
+    auto acc = load_grad_accum(&grad_accum_);
+    if (!acc) return Tensor{};
+    std::lock_guard<std::mutex> lock(acc->mtx);
+    return acc->grad_tensor;  // returns by value; lock releases before caller uses the copy
 }
 
 Tensor Tensor::detach() const noexcept {
@@ -258,41 +277,42 @@ Tensor Tensor::detach() const noexcept {
 }
 
 void Tensor::zero_grad() noexcept {
-    if (!grad_accum_) return;
-    std::lock_guard<std::mutex> lock(grad_accum_->mtx);
-    grad_accum_->grad_tensor = Tensor{};
+    auto acc = load_grad_accum(&grad_accum_);
+    if (!acc) return;
+    std::lock_guard<std::mutex> lock(acc->mtx);
+    acc->grad_tensor = Tensor{};
 }
 
 void Tensor::accumulate_grad(const Tensor& incoming) const {
     assert(requires_grad_ && "accumulate_grad called on tensor that does not require grad");
-    // Lazy allocation happens before the lock: grad_accum_ is a shared_ptr on *this*
-    // Tensor, not shared state, so this write is safe without the GradAccumulator mutex.
-    if (!grad_accum_) grad_accum_ = std::make_shared<GradAccumulator>();
+    // Concurrent backward calls may race to initialize grad_accum_. Publish the
+    // shared_ptr atomically so only one GradAccumulator instance wins.
+    auto acc = get_or_create_grad_accum(&grad_accum_);
 
-    OTTER_DBG("accumulate_grad: pre-lock  grad_accum=%p", static_cast<void*>(grad_accum_.get()));
+    OTTER_DBG("accumulate_grad: pre-lock  grad_accum=%p", static_cast<void*>(acc.get()));
 
     // Lock the GradAccumulator before the read-modify-write on grad_tensor.
     // Multiple threads may call accumulate_grad on different Tensor copies that
     // share the same GradAccumulator (e.g. parallel backward passes on leaf inputs).
-    std::lock_guard<std::mutex> lock(grad_accum_->mtx);
+    std::lock_guard<std::mutex> lock(acc->mtx);
 
     OTTER_DBG("accumulate_grad: locked    grad_accum=%p defined=%d",
-              static_cast<void*>(grad_accum_.get()),
-              static_cast<int>(grad_accum_->grad_tensor.defined()));
+              static_cast<void*>(acc.get()),
+              static_cast<int>(acc->grad_tensor.defined()));
 
-    if (!grad_accum_->grad_tensor.defined()) {
-        grad_accum_->grad_tensor = Tensor::zeros(shape_, *backend_, dtype_);
+    if (!acc->grad_tensor.defined()) {
+        acc->grad_tensor = Tensor::zeros(shape_, *backend_, dtype_);
         OTTER_DBG("accumulate_grad: allocated zeros grad_accum=%p",
-                  static_cast<void*>(grad_accum_.get()));
+                  static_cast<void*>(acc.get()));
     }
     assert(incoming.shape() == shape_ &&
            "accumulate_grad: incoming gradient shape does not match tensor shape");
     // detach() prevents a second-order grad graph through the accumulation add().
     // Without it, add() would wire a new AddOperation whose saved_inputs_ holds
     // references back into the grad chain, creating reference cycles.
-    OTTER_DBG("accumulate_grad: before add grad_accum=%p", static_cast<void*>(grad_accum_.get()));
-    grad_accum_->grad_tensor = grad_accum_->grad_tensor.add(incoming.detach());
-    OTTER_DBG("accumulate_grad: done      grad_accum=%p", static_cast<void*>(grad_accum_.get()));
+    OTTER_DBG("accumulate_grad: before add grad_accum=%p", static_cast<void*>(acc.get()));
+    acc->grad_tensor = acc->grad_tensor.add(incoming.detach());
+    OTTER_DBG("accumulate_grad: done      grad_accum=%p", static_cast<void*>(acc.get()));
 }
 
 // ── Tensor operations ─────────────────────────────────────────────────────────
@@ -462,6 +482,16 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
     if (!defined())
         throw std::runtime_error("backward: called on undefined Tensor");
 
+#ifdef OTTER_CUDA
+    // CUDA backward is currently serialized to avoid driver/runtime instability
+    // under multi-threaded graph execution on shared backend state.
+    static std::mutex cuda_backward_mtx;
+    std::unique_lock<std::mutex> cuda_backward_lock;
+    if (backend_ && backend_->memory_manager()->device() == Device::CUDA) {
+        cuda_backward_lock = std::unique_lock<std::mutex>(cuda_backward_mtx);
+    }
+#endif
+
     // ── 1. Build topological order (DFS post-order → reverse = loss first) ───
     OTTER_DBG("backward: phase1 DFS begin  this=%p", static_cast<const void*>(this));
     std::vector<Tensor>                 order;
@@ -478,9 +508,10 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
     // Lock each node's accumulator: a concurrent grad() call must not see a
     // partial write (e.g. a grad_tensor mid-assignment).
     for (const Tensor& node : order) {
-        if (!node.is_leaf_ && node.grad_accum_) {
-            std::lock_guard<std::mutex> lock(node.grad_accum_->mtx);
-            node.grad_accum_->grad_tensor = Tensor{};
+        auto node_acc = load_grad_accum(&node.grad_accum_);
+        if (!node.is_leaf_ && node_acc) {
+            std::lock_guard<std::mutex> lock(node_acc->mtx);
+            node_acc->grad_tensor = Tensor{};
         }
     }
 
@@ -490,10 +521,10 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
     // to a fresh start for this node's gradient.
     // Lock: a concurrent grad() call must not observe a half-written seed.
     OTTER_DBG("backward: phase3 seed  this=%p", static_cast<const void*>(this));
-    if (!grad_accum_) grad_accum_ = std::make_shared<GradAccumulator>();
+    auto root_acc = get_or_create_grad_accum(&grad_accum_);
     {
-        std::lock_guard<std::mutex> lock(grad_accum_->mtx);
-        grad_accum_->grad_tensor = std::move(seed);
+        std::lock_guard<std::mutex> lock(root_acc->mtx);
+        root_acc->grad_tensor = std::move(seed);
     }
 
     // ── 4. Backward traversal — compute gradients, no graph mutation ─────────
@@ -511,10 +542,11 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
         // or zero_grad() from racing with our read of grad_tensor.
         Tensor node_grad;
         {
-            if (!node.grad_accum_) continue;
-            std::lock_guard<std::mutex> lock(node.grad_accum_->mtx);
-            if (!node.grad_accum_->grad_tensor.defined()) continue;
-            node_grad = node.grad_accum_->grad_tensor;  // by-value copy under lock
+            auto node_acc = load_grad_accum(&node.grad_accum_);
+            if (!node_acc) continue;
+            std::lock_guard<std::mutex> lock(node_acc->mtx);
+            if (!node_acc->grad_tensor.defined()) continue;
+            node_grad = node_acc->grad_tensor;  // by-value copy under lock
         }
         // Lock released. node_grad is a private copy — safe to pass to backward.
 

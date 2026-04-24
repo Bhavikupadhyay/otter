@@ -13,6 +13,7 @@
 #include "cuda_kernel_engine.h"  // CUDAKernelEngine, LaunchSpec  (pragma once — safe)
 #include "cuda_index_utils.h"    // flat_to_offset, flat_to_two_offsets
 #include "functors.h"            // AddFunctor, SubFunctor, ...
+#include "otter/detail/cuda_runtime_mutex.h"
 
 #include "otter/tensor.h"        // Tensor
 
@@ -101,6 +102,7 @@ void launch_binary_contiguous(CUDAKernelEngine* engine,
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
     binary_contiguous_kernel<F><<<grid, block, 0, spec.stream>>>(pa, pb, po, n);
     if (spec.sync_after) {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         const cudaError_t err = ::cudaDeviceSynchronize();
         assert(err == cudaSuccess && "launch_binary_contiguous: cudaDeviceSynchronize failed");
         (void)err;
@@ -121,13 +123,16 @@ void launch_binary_strided(CUDAKernelEngine* engine,
     std::size_t* d_strides_b = nullptr;
 
     cudaError_t e;
-    e = ::cudaMalloc(&d_shape,     ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_strides_b, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
+    {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        e = ::cudaMalloc(&d_shape,     ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMalloc(&d_strides_b, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
 
-    e = ::cudaMemcpy(d_shape,     out.shape().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_strides_a, a.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_strides_b, b.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_shape,     out.shape().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_strides_a, a.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_strides_b, b.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+    }
 
     const double* pa = engine->raw_ptr<double>(a.buffer())               + a.offset();
     const double* pb = engine->raw_ptr<double>(b.buffer())               + b.offset();
@@ -140,14 +145,18 @@ void launch_binary_strided(CUDAKernelEngine* engine,
         pa, pb, po, d_shape, d_strides_a, d_strides_b, ndim, n);
 
     if (spec.sync_after) {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         const cudaError_t err = ::cudaDeviceSynchronize();
         assert(err == cudaSuccess && "launch_binary_strided: cudaDeviceSynchronize failed");
         (void)err;
     }
 
-    ::cudaFree(d_shape);
-    ::cudaFree(d_strides_a);
-    ::cudaFree(d_strides_b);
+    {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        ::cudaFree(d_shape);
+        ::cudaFree(d_strides_a);
+        ::cudaFree(d_strides_b);
+    }
 }
 
 // ── Unary launch helpers ──────────────────────────────────────────────────────
@@ -164,6 +173,7 @@ void launch_unary_contiguous(CUDAKernelEngine* engine,
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
     unary_contiguous_kernel<F><<<grid, block, 0, spec.stream>>>(pa, po, n);
     if (spec.sync_after) {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         const cudaError_t err = ::cudaDeviceSynchronize();
         assert(err == cudaSuccess && "launch_unary_contiguous: cudaDeviceSynchronize failed");
         (void)err;
@@ -182,11 +192,14 @@ void launch_unary_strided(CUDAKernelEngine* engine,
     std::size_t* d_strides_a = nullptr;
 
     cudaError_t e;
-    e = ::cudaMalloc(&d_shape,     ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
+    {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        e = ::cudaMalloc(&d_shape,     ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
 
-    e = ::cudaMemcpy(d_shape,     out.shape().data(), ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_strides_a, a.stride().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_shape,     out.shape().data(), ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_strides_a, a.stride().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+    }
 
     const double* pa = engine->raw_ptr<double>(a.buffer())               + a.offset();
     double*       po = engine->mutable_ptr<double>(out.mutable_buffer()) + out.offset();
@@ -198,13 +211,17 @@ void launch_unary_strided(CUDAKernelEngine* engine,
         pa, po, d_shape, d_strides_a, ndim, n);
 
     if (spec.sync_after) {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         const cudaError_t err = ::cudaDeviceSynchronize();
         assert(err == cudaSuccess && "launch_unary_strided: cudaDeviceSynchronize failed");
         (void)err;
     }
 
-    ::cudaFree(d_shape);
-    ::cudaFree(d_strides_a);
+    {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        ::cudaFree(d_shape);
+        ::cudaFree(d_strides_a);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

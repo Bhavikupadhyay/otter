@@ -4,6 +4,7 @@
 
 #include "otter/tensor.h"
 #include "otter/detail/stride_utils.h"
+#include "otter/detail/cuda_runtime_mutex.h"
 
 #include <cassert>
 #include <cstddef>
@@ -118,23 +119,26 @@ void CUDAKernelEngine::cuda_reduce_to(const Tensor& src, Tensor& dst) const {
     std::size_t* d_out_strides = nullptr;
 
     cudaError_t e;
-    e = ::cudaMalloc(&d_in_shape,    in_ndim  * sizeof(std::size_t));
-    assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_in_strides,  in_ndim  * sizeof(std::size_t));
-    assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_out_shape,   out_ndim * sizeof(std::size_t));
-    assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_out_strides, out_ndim * sizeof(std::size_t));
-    assert(e == cudaSuccess); (void)e;
+    {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        e = ::cudaMalloc(&d_in_shape,    in_ndim  * sizeof(std::size_t));
+        assert(e == cudaSuccess); (void)e;
+        e = ::cudaMalloc(&d_in_strides,  in_ndim  * sizeof(std::size_t));
+        assert(e == cudaSuccess); (void)e;
+        e = ::cudaMalloc(&d_out_shape,   out_ndim * sizeof(std::size_t));
+        assert(e == cudaSuccess); (void)e;
+        e = ::cudaMalloc(&d_out_strides, out_ndim * sizeof(std::size_t));
+        assert(e == cudaSuccess); (void)e;
 
-    e = ::cudaMemcpy(d_in_shape,    in_shape.data(),       in_ndim  * sizeof(std::size_t), cudaMemcpyHostToDevice);
-    assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_in_strides,  src.stride().data(),   in_ndim  * sizeof(std::size_t), cudaMemcpyHostToDevice);
-    assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_out_shape,   out_shape.data(),      out_ndim * sizeof(std::size_t), cudaMemcpyHostToDevice);
-    assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_out_strides, out_strides.data(),    out_ndim * sizeof(std::size_t), cudaMemcpyHostToDevice);
-    assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_in_shape,    in_shape.data(),       in_ndim  * sizeof(std::size_t), cudaMemcpyHostToDevice);
+        assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_in_strides,  src.stride().data(),   in_ndim  * sizeof(std::size_t), cudaMemcpyHostToDevice);
+        assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_out_shape,   out_shape.data(),      out_ndim * sizeof(std::size_t), cudaMemcpyHostToDevice);
+        assert(e == cudaSuccess); (void)e;
+        e = ::cudaMemcpy(d_out_strides, out_strides.data(),    out_ndim * sizeof(std::size_t), cudaMemcpyHostToDevice);
+        assert(e == cudaSuccess); (void)e;
+    }
 
     const double* sp = raw_const<double>(src.buffer())             + src.offset();
     double*       dp = raw_mutable<double>(dst.mutable_buffer())   + dst.offset();
@@ -148,15 +152,19 @@ void CUDAKernelEngine::cuda_reduce_to(const Tensor& src, Tensor& dst) const {
                                                                 in_ndim, prepended, numel_in);
 
     if (default_spec_.sync_after) {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         const cudaError_t sync_err = ::cudaDeviceSynchronize();
         assert(sync_err == cudaSuccess && "cuda_reduce_to: cudaDeviceSynchronize failed");
         (void)sync_err;
     }
 
-    ::cudaFree(d_in_shape);
-    ::cudaFree(d_in_strides);
-    ::cudaFree(d_out_shape);
-    ::cudaFree(d_out_strides);
+    {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        ::cudaFree(d_in_shape);
+        ::cudaFree(d_in_strides);
+        ::cudaFree(d_out_shape);
+        ::cudaFree(d_out_strides);
+    }
 }
 
 } // namespace otter
