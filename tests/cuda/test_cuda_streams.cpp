@@ -1,7 +1,7 @@
 #include "../utils/test_utils.h"
 
 #include "otter/backends/cuda.h"
-#include "otter/kernel/stream.h"
+#include "otter/core/stream.h"
 
 // Private header — accessible because tests/CMakeLists.txt adds PROJECT_SOURCE_DIR/src.
 #include "backends/cuda_stream.h"

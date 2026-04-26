@@ -10,6 +10,7 @@ target_sources(otter_core PRIVATE backend.cpp)
 
 if(OTTER_CUDA)
     target_compile_definitions(otter_core PRIVATE OTTER_CUDA)
+    add_library(otter_cuda ALIAS otter_core)
 endif()
 
 add_subdirectory(memory)
