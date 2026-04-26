@@ -1,7 +1,7 @@
 #include "memory/cuda_memory_manager.h"
 
-#include <new>
 #include <cassert>
+#include <new>
 #include <vector>
 
 #include "cuda_check.h"
@@ -14,7 +14,8 @@ namespace otter {
 CUDAMemoryManager::CUDAMemoryManager() = default;
 
 CUDAMemoryManager::~CUDAMemoryManager() noexcept {
-    std::vector<std::byte*> live_ptrs;
+    std::vector<void*> live_ptrs;
+    std::vector<void*> pool_ptrs;
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -23,18 +24,23 @@ CUDAMemoryManager::~CUDAMemoryManager() noexcept {
                "CUDAMemoryManager destroyed with live allocations");
 
         live_ptrs.reserve(active_.size());
-        for (auto& [ptr, bytes] : active_) {
-            live_ptrs.push_back(ptr);
+        for (auto& [ptr, rec] : active_) {
+            live_ptrs.push_back(static_cast<void*>(ptr));
         }
         active_.clear();
+
+        pool_ptrs.reserve(free_pool_.size());
+        for (auto& [size, rec] : free_pool_) {
+            pool_ptrs.push_back(static_cast<void*>(rec.ptr));
+        }
+        free_pool_.clear();
     }
 
-    // Release all OS resources outside the mutex so shutdown cannot block
+    // Release all device memory outside the mutex so shutdown cannot block
     // other allocator operations while CUDA performs its own cleanup.
-    for (auto* ptr : live_ptrs) {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        ::cudaFree(static_cast<void*>(ptr));
-    }
+    std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+    for (void* p : live_ptrs) ::cudaFree(p);
+    for (void* p : pool_ptrs) ::cudaFree(p);
 }
 
 std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment) {
@@ -51,34 +57,77 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
             "CUDAMemoryManager::allocate: alignment > 256 not supported");
     }
 
-    void* raw = nullptr;
     OTTER_DBG("cuda_memory_manager: allocate begin bytes=%zu alignment=%zu", bytes, alignment);
-    {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t err = ::cudaMalloc(&raw, bytes);
-        if (err == cudaErrorMemoryAllocation) {
-            throw std::bad_alloc();
+
+    // ── Small path: direct cudaMalloc, never pooled ───────────────────────────
+    if (bytes < kSmallAllocThreshold) {
+        void* raw = nullptr;
+        {
+            std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+            const cudaError_t err = ::cudaMalloc(&raw, bytes);
+            if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
+            if (err != cudaSuccess)
+                throw std::runtime_error(
+                    std::string("CUDA error: ") + ::cudaGetErrorString(err));
         }
-        if (err != cudaSuccess) {
-            throw std::runtime_error(
-                std::string("CUDA error: ") + ::cudaGetErrorString(err));
+        auto* ptr = static_cast<std::byte*>(raw);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            active_.emplace(ptr, Rec{ptr, bytes, bytes, false});
+            bytes_allocated_ += bytes;
+            bytes_reserved_  += bytes;
+        }
+        OTTER_DBG("cuda_memory_manager: allocate small done ptr=%p bytes=%zu",
+                  static_cast<void*>(ptr), bytes);
+        return ptr;
+    }
+
+    // ── Large path: try pool first ────────────────────────────────────────────
+    const std::size_t seg = compute_segment_size(bytes);
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = free_pool_.lower_bound(seg);
+        if (it != free_pool_.end()) {
+            Rec rec          = it->second;
+            free_pool_.erase(it);
+            rec.requested_bytes = bytes;
+            active_.emplace(rec.ptr, rec);
+            bytes_allocated_ += bytes;
+            // bytes_reserved_ unchanged: segment stays in device memory
+            OTTER_DBG("cuda_memory_manager: allocate pool hit ptr=%p seg=%zu bytes=%zu",
+                      static_cast<void*>(rec.ptr), rec.segment_size, bytes);
+            return rec.ptr;
         }
     }
 
+    // Pool miss: allocate a new segment from the device.
+    void* raw = nullptr;
+    {
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        const cudaError_t err = ::cudaMalloc(&raw, seg);
+        if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
+        if (err != cudaSuccess)
+            throw std::runtime_error(
+                std::string("CUDA error: ") + ::cudaGetErrorString(err));
+    }
     auto* ptr = static_cast<std::byte*>(raw);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        active_.emplace(ptr, bytes);
+        active_.emplace(ptr, Rec{ptr, seg, bytes, true});
+        bytes_allocated_ += bytes;
+        bytes_reserved_  += seg;
     }
-    bytes_allocated_.fetch_add(bytes, std::memory_order_relaxed);
-    OTTER_DBG("cuda_memory_manager: allocate done ptr=%p bytes=%zu", static_cast<void*>(ptr), bytes);
+    OTTER_DBG("cuda_memory_manager: allocate large done ptr=%p seg=%zu bytes=%zu",
+              static_cast<void*>(ptr), seg, bytes);
     return ptr;
 }
 
 void CUDAMemoryManager::free(std::byte* ptr) noexcept {
     if (!ptr) return;
 
-    std::size_t requested = 0;
+    bool is_large = false;
+    Rec  rec{};
     OTTER_DBG("cuda_memory_manager: free begin ptr=%p", static_cast<void*>(ptr));
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -87,31 +136,56 @@ void CUDAMemoryManager::free(std::byte* ptr) noexcept {
             assert(false && "CUDAMemoryManager::free: pointer not found in active set");
             return;
         }
-        requested = it->second;
+        rec      = it->second;
+        is_large = rec.is_large;
         active_.erase(it);
+        bytes_allocated_ -= rec.requested_bytes;
+
+        if (is_large) {
+            // Defer cudaFree: return segment to the pool.
+            free_pool_.emplace(rec.segment_size, rec);
+            // bytes_reserved_ unchanged: segment remains device-backed in the pool.
+        } else {
+            bytes_reserved_ -= rec.segment_size;
+        }
     }
 
-    {
+    if (!is_large) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-    cudaError_t err = ::cudaFree(static_cast<void*>(ptr));
-    assert(err == cudaSuccess && "CUDAMemoryManager::free: cudaFree failed");
-    (void)err; // suppress unused-variable warning in release builds
+        cudaError_t err = ::cudaFree(static_cast<void*>(ptr));
+        assert(err == cudaSuccess && "CUDAMemoryManager::free: cudaFree failed");
+        (void)err;
     }
-
-    bytes_allocated_.fetch_sub(requested, std::memory_order_relaxed);
-    OTTER_DBG("cuda_memory_manager: free done ptr=%p bytes=%zu", static_cast<void*>(ptr), requested);
+    OTTER_DBG("cuda_memory_manager: free done ptr=%p is_large=%d", static_cast<void*>(ptr), static_cast<int>(is_large));
 }
 
 void CUDAMemoryManager::release_cache() noexcept {
-    // No pool to flush. Synchronize device as a side-effect so callers can
-    // treat release_cache() as a full device fence at checkpointing boundaries.
     OTTER_DBG("cuda_memory_manager: release_cache begin");
+
+    std::vector<void*> to_free;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        to_free.reserve(free_pool_.size());
+        for (auto& [size, rec] : free_pool_) {
+            bytes_reserved_ -= rec.segment_size;
+            to_free.push_back(static_cast<void*>(rec.ptr));
+        }
+        free_pool_.clear();
+    }
+
     std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+    // Synchronize device before freeing — documented as a full checkpoint fence.
     cudaError_t err = ::cudaDeviceSynchronize();
     assert(err == cudaSuccess &&
            "CUDAMemoryManager::release_cache: cudaDeviceSynchronize failed");
     (void)err;
-    OTTER_DBG("cuda_memory_manager: release_cache done");
+    for (void* p : to_free) {
+        err = ::cudaFree(p);
+        assert(err == cudaSuccess &&
+               "CUDAMemoryManager::release_cache: cudaFree failed");
+        (void)err;
+    }
+    OTTER_DBG("cuda_memory_manager: release_cache done freed=%zu", to_free.size());
 }
 
 Device CUDAMemoryManager::device() const noexcept {
@@ -119,12 +193,13 @@ Device CUDAMemoryManager::device() const noexcept {
 }
 
 std::size_t CUDAMemoryManager::bytes_allocated() const noexcept {
-    return bytes_allocated_.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex_);
+    return bytes_allocated_;
 }
 
 std::size_t CUDAMemoryManager::bytes_reserved() const noexcept {
-    // No pool overhead — reserved equals allocated.
-    return bytes_allocated_.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(mutex_);
+    return bytes_reserved_;
 }
 
 } // namespace otter
