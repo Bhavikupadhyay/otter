@@ -90,8 +90,9 @@ void CUDAKernelEngine::cuda_sum(const Tensor& a, Tensor& out) const {
         (n + static_cast<std::size_t>(block) - 1) / static_cast<std::size_t>(block));
     reduce_sum_kernel<<<grid, block, 0, default_spec_.stream>>>(pa, po, n);
     if (default_spec_.sync_after) {
-        cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "cuda_sum: cudaDeviceSynchronize failed");
+        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+        cudaError_t err = ::cudaStreamSynchronize(default_spec_.stream);
+        assert(err == cudaSuccess && "cuda_sum: cudaStreamSynchronize failed");
         (void)err;
     }
 }
@@ -153,8 +154,8 @@ void CUDAKernelEngine::cuda_reduce_to(const Tensor& src, Tensor& dst) const {
 
     if (default_spec_.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t sync_err = ::cudaDeviceSynchronize();
-        assert(sync_err == cudaSuccess && "cuda_reduce_to: cudaDeviceSynchronize failed");
+        const cudaError_t sync_err = ::cudaStreamSynchronize(default_spec_.stream);
+        assert(sync_err == cudaSuccess && "cuda_reduce_to: cudaStreamSynchronize failed");
         (void)sync_err;
     }
 

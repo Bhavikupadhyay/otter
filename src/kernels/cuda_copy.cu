@@ -75,8 +75,8 @@ void CUDAKernelEngine::cuda_copy(const Tensor& src, Tensor& dst) const {
 
     if (default_spec_.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t sync_err = ::cudaDeviceSynchronize();
-        assert(sync_err == cudaSuccess && "cuda_copy: cudaDeviceSynchronize failed");
+        const cudaError_t sync_err = ::cudaStreamSynchronize(default_spec_.stream);
+        assert(sync_err == cudaSuccess && "cuda_copy: cudaStreamSynchronize failed");
         (void)sync_err;
     }
 

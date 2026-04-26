@@ -103,8 +103,8 @@ void launch_binary_contiguous(CUDAKernelEngine* engine,
     binary_contiguous_kernel<F><<<grid, block, 0, spec.stream>>>(pa, pb, po, n);
     if (spec.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "launch_binary_contiguous: cudaDeviceSynchronize failed");
+        const cudaError_t err = ::cudaStreamSynchronize(spec.stream);
+        assert(err == cudaSuccess && "launch_binary_contiguous: cudaStreamSynchronize failed");
         (void)err;
     }
 }
@@ -146,8 +146,8 @@ void launch_binary_strided(CUDAKernelEngine* engine,
 
     if (spec.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "launch_binary_strided: cudaDeviceSynchronize failed");
+        const cudaError_t err = ::cudaStreamSynchronize(spec.stream);
+        assert(err == cudaSuccess && "launch_binary_strided: cudaStreamSynchronize failed");
         (void)err;
     }
 
@@ -174,8 +174,8 @@ void launch_unary_contiguous(CUDAKernelEngine* engine,
     unary_contiguous_kernel<F><<<grid, block, 0, spec.stream>>>(pa, po, n);
     if (spec.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "launch_unary_contiguous: cudaDeviceSynchronize failed");
+        const cudaError_t err = ::cudaStreamSynchronize(spec.stream);
+        assert(err == cudaSuccess && "launch_unary_contiguous: cudaStreamSynchronize failed");
         (void)err;
     }
 }
@@ -212,8 +212,8 @@ void launch_unary_strided(CUDAKernelEngine* engine,
 
     if (spec.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "launch_unary_strided: cudaDeviceSynchronize failed");
+        const cudaError_t err = ::cudaStreamSynchronize(spec.stream);
+        assert(err == cudaSuccess && "launch_unary_strided: cudaStreamSynchronize failed");
         (void)err;
     }
 

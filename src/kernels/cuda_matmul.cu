@@ -82,8 +82,8 @@ void CUDAKernelEngine::cuda_matmul(const Tensor& a, const Tensor& b, Tensor& out
 
     if (default_spec_.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "cuda_matmul: cudaDeviceSynchronize failed");
+        cudaError_t err = ::cudaStreamSynchronize(default_spec_.stream);
+        assert(err == cudaSuccess && "cuda_matmul: cudaStreamSynchronize failed");
         (void)err;
     }
 }

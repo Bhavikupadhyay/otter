@@ -38,8 +38,8 @@ void CUDAKernelEngine::cuda_scale(Tensor& dst, double alpha) const {
     scale_kernel<<<grid, block, 0, default_spec_.stream>>>(ptr, alpha, n);
     if (default_spec_.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "cuda_scale: cudaDeviceSynchronize failed");
+        cudaError_t err = ::cudaStreamSynchronize(default_spec_.stream);
+        assert(err == cudaSuccess && "cuda_scale: cudaStreamSynchronize failed");
         (void)err;
     }
 }
@@ -56,8 +56,8 @@ void CUDAKernelEngine::cuda_axpy(Tensor& dst, double alpha, const Tensor& src) c
     axpy_kernel<<<grid, block, 0, default_spec_.stream>>>(dp, alpha, sp, n);
     if (default_spec_.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "cuda_axpy: cudaDeviceSynchronize failed");
+        cudaError_t err = ::cudaStreamSynchronize(default_spec_.stream);
+        assert(err == cudaSuccess && "cuda_axpy: cudaStreamSynchronize failed");
         (void)err;
     }
 }
