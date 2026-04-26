@@ -1,8 +1,8 @@
-#include "cuda_stream.h"
+#include "cuda/engine/stream.h"
 
 #include <cassert>
 
-#include "cuda_check.h"
+#include "cuda/cuda_check.h"
 
 namespace otter {
 

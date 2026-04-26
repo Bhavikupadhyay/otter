@@ -4,7 +4,7 @@
 #include "otter/core/stream.h"
 
 // Private header — accessible because tests/CMakeLists.txt adds PROJECT_SOURCE_DIR/src.
-#include "backends/cuda_stream.h"
+#include "cuda/engine/stream.h"
 
 namespace otter::test {
 

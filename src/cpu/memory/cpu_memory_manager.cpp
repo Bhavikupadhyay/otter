@@ -1,4 +1,4 @@
-#include "memory/cpu_memory_manager.h"
+#include "cpu/memory/cpu_memory_manager.h"
 
 #include <cassert>
 #include <cstring>

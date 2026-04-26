@@ -1,25 +1,15 @@
 #pragma once
 
 // Internal header — not part of the public include/otter/ surface.
-// Only included by src/kernels/ translation units and cuda_backend.cpp.
+// Only included by src/cuda/ translation units.
 
 #include "otter/kernel/kernel_engine.h"
-
-#include <cuda_runtime.h>
+#include "cuda/engine/launch_spec.h"
 
 namespace otter {
 
 class Tensor;
 class Buffer;
-
-// Launch parameters for CUDA kernels.
-// Defaults reproduce the original hardcoded behaviour (block=256, no stream,
-// sync after every launch). Override per-engine or per-call as needed.
-struct LaunchSpec {
-    std::size_t  block_size = 256;
-    cudaStream_t stream     = nullptr;
-    bool         sync_after = true;
-};
 
 // CUDAKernelEngine — concrete KernelEngine for the CUDA backend.
 //
@@ -32,7 +22,7 @@ struct LaunchSpec {
 // The remaining kernel families (fill, copy, reduce, matmul, inplace) keep their
 // engine-method pattern until a follow-up sprint migrates them.
 //
-// Include dispatcher.h (not this header) when writing .cu files that call
+// Include core/dispatcher.h (not this header) when writing .cu files that call
 // raw_const / raw_mutable — dispatcher.h supplies the template bodies.
 class CUDAKernelEngine final : public KernelEngine {
 public:

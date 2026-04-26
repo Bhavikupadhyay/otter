@@ -1,8 +1,8 @@
 // Must be first — provides raw_const<T> / raw_mutable<T> template bodies.
-#include "dispatcher.h"
-#include "cuda_kernel_engine.h"
+#include "core/dispatcher.h"
+#include "cuda/engine/cuda_kernel_engine.h"
 
-#include "cuda_index_utils.h"
+#include "cuda/internal/index_utils.h"
 #include "otter/tensor.h"
 #include <cassert>
 #include <cstddef>

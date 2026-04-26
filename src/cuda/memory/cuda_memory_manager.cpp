@@ -1,10 +1,10 @@
-#include "memory/cuda_memory_manager.h"
+#include "cuda/memory/cuda_memory_manager.h"
 
 #include <cassert>
 #include <new>
 #include <vector>
 
-#include "cuda_check.h"
+#include "cuda/cuda_check.h"
 #include "otter/detail/debug_log.h"
 #include "otter/detail/math_utils.h"
 

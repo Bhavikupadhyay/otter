@@ -1,7 +1,7 @@
-#include "cuda_backend.h"
+#include "cuda/cuda_backend.h"
 #include "otter/backends/cuda.h"
-#include "memory/cuda_memory_manager.h"
-#include "kernels/cuda_kernel_engine.h"
+#include "cuda/memory/cuda_memory_manager.h"
+#include "cuda/engine/cuda_kernel_engine.h"
 
 #include <cassert>
 #include <memory>

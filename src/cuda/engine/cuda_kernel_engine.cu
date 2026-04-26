@@ -1,13 +1,13 @@
 // dispatcher.h MUST be first — provides raw_const<T> / raw_mutable<T> template
 // bodies. cuda_kernel_engine.h pulls in kernel_engine.h (which declares them);
 // dispatcher.h bridges buffer.h to provide the definitions.
-#include "dispatcher.h"
-#include "cuda_kernel_engine.h"
+#include "core/dispatcher.h"
+#include "cuda/engine/cuda_kernel_engine.h"
 
-// cuda_kernel_templates.cuh defines all __global__ binary/unary kernel templates
-// and their CUDAElementwise*Kernel dispatcher classes. NVCC requires the template
-// definitions and their <<<...>>> launch sites in the same TU — hence this include.
-#include "cuda_kernel_templates.cuh"
+// cuda/internal/kernel_templates.cuh defines all __global__ binary/unary kernel
+// templates and their CUDAElementwise*Kernel dispatcher classes. NVCC requires the
+// template definitions and their <<<...>>> launch sites in the same TU.
+#include "cuda/internal/kernel_templates.cuh"
 
 #include "otter/tensor.h"
 

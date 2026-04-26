@@ -9,10 +9,10 @@
 // raw_mutable<T> template bodies are defined before instantiation. The including
 // TU (cuda_kernel_engine.cu) guarantees this by listing dispatcher.h first.
 
-#include "dispatcher.h"          // raw_const / raw_mutable template bodies
-#include "cuda_kernel_engine.h"  // CUDAKernelEngine, LaunchSpec  (pragma once — safe)
-#include "cuda_index_utils.h"    // flat_to_offset, flat_to_two_offsets
-#include "functors.h"            // AddFunctor, SubFunctor, ...
+#include "core/dispatcher.h"                 // raw_const / raw_mutable template bodies
+#include "cuda/engine/cuda_kernel_engine.h"  // CUDAKernelEngine, LaunchSpec  (pragma once — safe)
+#include "cuda/internal/index_utils.h"       // flat_to_offset, flat_to_two_offsets
+#include "cuda/internal/functors.h"          // AddFunctor, SubFunctor, ...
 #include "otter/tensor.h"        // Tensor
 
 #include <cassert>

@@ -1,8 +1,8 @@
 // Include dispatcher.h first — it provides the raw_const / raw_mutable template
 // bodies that CPUKernelEngine methods call. Must be before kernel_engine.h is
 // pulled in by any subsequent include (dispatcher.h includes it internally).
-#include "dispatcher.h"
-#include "cpu_kernel_engine.h"
+#include "core/dispatcher.h"
+#include "cpu/engine/cpu_kernel_engine.h"
 
 #include "otter/tensor.h"
 #include "otter/detail/stride_utils.h"

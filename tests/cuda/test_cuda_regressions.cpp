@@ -7,9 +7,9 @@
 #include "otter/tensor.h"
 
 // Private headers — accessible because tests/CMakeLists.txt adds PROJECT_SOURCE_DIR/src.
-#include "backends/cuda_stream.h"
-#include "kernels/cuda_kernel_engine.h"
-#include "memory/cuda_memory_manager.h"
+#include "cuda/engine/stream.h"
+#include "cuda/engine/cuda_kernel_engine.h"
+#include "cuda/memory/cuda_memory_manager.h"
 
 namespace otter::test {
 

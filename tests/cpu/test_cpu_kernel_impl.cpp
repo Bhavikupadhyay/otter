@@ -10,7 +10,7 @@
 #include "otter/kernel/backend.h"
 #include "otter/kernel/kernel_engine.h"
 #include "otter/optim/sgd.h"
-#include "memory/cpu_memory_manager.h"
+#include "cpu/memory/cpu_memory_manager.h"
 
 // CPU kernel implementation tests: direct dispatch_binary/unary/copy/matmul,
 // kernel registry stubs, SGD/dispatch_scale/dispatch_axpy, contiguous(), MLP loop.

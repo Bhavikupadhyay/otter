@@ -1,6 +1,6 @@
 #include "otter/backends/cpu.h"
-#include "memory/cpu_memory_manager.h"
-#include "kernels/cpu_kernel_engine.h"
+#include "cpu/memory/cpu_memory_manager.h"
+#include "cpu/engine/cpu_kernel_engine.h"
 
 namespace otter {
 

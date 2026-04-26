@@ -3,7 +3,7 @@
 // Internal header — not part of the public include/otter/ surface.
 
 #include "otter/kernel/backend.h"
-#include "cuda_stream.h"
+#include "cuda/engine/stream.h"
 
 namespace otter {
 
