@@ -107,6 +107,8 @@ otter::Tensor back = host.cuda();
 
 Double-precision atomic accumulations (used by `sum` and `reduce_to`) use a portable CAS loop that works on SM 2.0+. Hardware `atomicAdd(double*)` (SM 6.0+) is not required.
 
+The current CUDA implementation is correctness-first and conservatively synchronized. In particular, kernel launches, allocator interactions, and backward execution are coordinated in a way that makes the CUDA path effectively serialized today, even though the public surface already exposes stream-aware concepts. This keeps behavior predictable while the async execution model and memory-lifetime rules are still being hardened.
+
 ---
 
 ## Thread safety
@@ -114,6 +116,8 @@ Double-precision atomic accumulations (used by `sum` and `reduce_to`) use a port
 `grad()`, `zero_grad()`, and `accumulate_grad()` are mutex-protected via `GradAccumulator::mtx`. Concurrent reads and writes on the same leaf's gradient are safe from any thread.
 
 Concurrent `backward()` calls on separate computation graphs that share a leaf weight are safe. The canonical data-parallel pattern — N threads each computing loss and calling `backward()`, one shared weight tensor — works without external synchronization.
+
+On CUDA, this safety model currently relies on conservative synchronization rather than overlapping execution. The CUDA path is thread-safe for the supported patterns, but it should not yet be interpreted as a fully asynchronous multi-stream execution engine.
 
 `SGD::step()` is not safe for concurrent calls on the same optimizer. `dispatch_scale` and `dispatch_axpy` write directly into parameter and velocity buffers. Call `step()` from one thread after all backward passes have joined.
 
@@ -159,7 +163,9 @@ t.to_vector<double>();          // host-side copy in logical row-major order
 cmake -B build/debug   -GNinja -DCMAKE_BUILD_TYPE=Debug   -DCMAKE_CXX_COMPILER=clang++
 cmake -B build/release -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
 cmake --build build/debug
-./build/debug/tests/otter_tests
+cmake --build build/release
+./build/debug/tests/otter_cpu_tests
+./build/release/tests/otter_cpu_tests
 ```
 
 ### With CUDA (requires NVIDIA GPU and CUDA toolkit)
@@ -171,9 +177,19 @@ cmake -B build/cuda/release -GNinja -DCMAKE_BUILD_TYPE=Release  \
       -DCMAKE_CXX_COMPILER=clang++ -DOTTER_CUDA=ON
 cmake --build build/cuda/debug
 cmake --build build/cuda/release
-./build/cuda/debug/tests/otter_tests
-./build/cuda/release/tests/otter_tests
+./build/cuda/debug/tests/otter_cpu_tests
+./build/cuda/debug/tests/otter_cuda_tests
+./build/cuda/debug/tests/otter_cross_tests
+./build/cuda/release/tests/otter_cpu_tests
+./build/cuda/release/tests/otter_cuda_tests
+./build/cuda/release/tests/otter_cross_tests
 ```
+
+With `-DOTTER_CUDA=ON`, the build currently produces three test executables:
+
+- `otter_cpu_tests`
+- `otter_cuda_tests`
+- `otter_cross_tests`
 
 By default CMake targets the GPU in the machine. To target a specific architecture (e.g. for CI or cross-compilation), pass `-DCMAKE_CUDA_ARCHITECTURES=75` at configure time. Use `native` to auto-detect.
 

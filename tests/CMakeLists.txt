@@ -23,6 +23,7 @@ if(OTTER_CUDA)
         cuda/run_cuda_tests.cpp
         cuda/test_cuda_memory.cpp
         cuda/test_cuda_streams.cpp
+        cuda/test_cuda_regressions.cpp
         cuda/test_cuda_concurrency.cpp)
 
     target_link_libraries(otter_cuda_tests PRIVATE otter_cuda Threads::Threads)

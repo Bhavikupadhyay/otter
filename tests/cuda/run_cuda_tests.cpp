@@ -12,6 +12,7 @@
 namespace otter::test {
 void run_cuda_memory_tests();
 void run_cuda_stream_tests();
+void run_cuda_regression_tests();
 void run_cuda_concurrency_tests();
 } // namespace otter::test
 
@@ -32,6 +33,7 @@ void run_all_cuda_tests() {
     // ── CUDA-specific tests ───────────────────────────────────────────────────
     run_cuda_memory_tests();
     run_cuda_stream_tests();
+    run_cuda_regression_tests();
     run_cuda_concurrency_tests();
 }
 

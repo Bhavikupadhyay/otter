@@ -3,6 +3,7 @@
 #include "memory/cuda_memory_manager.h"
 #include "kernels/cuda_kernel_engine.h"
 
+#include <cassert>
 #include <memory>
 
 namespace otter {
@@ -10,7 +11,11 @@ namespace otter {
 CUDABackend::CUDABackend()
     : Backend(std::make_unique<CUDAMemoryManager>(),
               std::make_unique<CUDAKernelEngine>())
-{}
+{
+    auto* engine = dynamic_cast<CUDAKernelEngine*>(kernel_engine());
+    assert(engine != nullptr && "CUDABackend: kernel_engine() must be CUDAKernelEngine");
+    engine->default_spec_.stream = stream_.raw();
+}
 
 // cuda_backend() — returns the singleton CUDA Backend.
 //
