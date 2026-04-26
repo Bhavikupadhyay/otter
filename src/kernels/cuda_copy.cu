@@ -4,8 +4,6 @@
 
 #include "cuda_index_utils.h"
 #include "otter/tensor.h"
-#include "otter/detail/cuda_runtime_mutex.h"
-
 #include <cassert>
 #include <cstddef>
 
@@ -47,22 +45,19 @@ void CUDAKernelEngine::cuda_copy(const Tensor& src, Tensor& dst) const {
     const std::size_t sz = ndim * sizeof(std::size_t);
 
     cudaError_t e;
-    {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        e = ::cudaMalloc(&d_src_stride, sz);
-        assert(e == cudaSuccess && "cuda_copy: cudaMalloc src_stride failed"); (void)e;
-        e = ::cudaMalloc(&d_dst_stride, sz);
-        assert(e == cudaSuccess && "cuda_copy: cudaMalloc dst_stride failed"); (void)e;
-        e = ::cudaMalloc(&d_shape, sz);
-        assert(e == cudaSuccess && "cuda_copy: cudaMalloc shape failed"); (void)e;
+    e = ::cudaMalloc(&d_src_stride, sz);
+    assert(e == cudaSuccess && "cuda_copy: cudaMalloc src_stride failed"); (void)e;
+    e = ::cudaMalloc(&d_dst_stride, sz);
+    assert(e == cudaSuccess && "cuda_copy: cudaMalloc dst_stride failed"); (void)e;
+    e = ::cudaMalloc(&d_shape, sz);
+    assert(e == cudaSuccess && "cuda_copy: cudaMalloc shape failed"); (void)e;
 
-        e = ::cudaMemcpy(d_src_stride, src.stride().data(), sz, cudaMemcpyHostToDevice);
-        assert(e == cudaSuccess && "cuda_copy: cudaMemcpy src_stride failed"); (void)e;
-        e = ::cudaMemcpy(d_dst_stride, dst.stride().data(), sz, cudaMemcpyHostToDevice);
-        assert(e == cudaSuccess && "cuda_copy: cudaMemcpy dst_stride failed"); (void)e;
-        e = ::cudaMemcpy(d_shape, src.shape().data(), sz, cudaMemcpyHostToDevice);
-        assert(e == cudaSuccess && "cuda_copy: cudaMemcpy shape failed"); (void)e;
-    }
+    e = ::cudaMemcpy(d_src_stride, src.stride().data(), sz, cudaMemcpyHostToDevice);
+    assert(e == cudaSuccess && "cuda_copy: cudaMemcpy src_stride failed"); (void)e;
+    e = ::cudaMemcpy(d_dst_stride, dst.stride().data(), sz, cudaMemcpyHostToDevice);
+    assert(e == cudaSuccess && "cuda_copy: cudaMemcpy dst_stride failed"); (void)e;
+    e = ::cudaMemcpy(d_shape, src.shape().data(), sz, cudaMemcpyHostToDevice);
+    assert(e == cudaSuccess && "cuda_copy: cudaMemcpy shape failed"); (void)e;
 
     const double* sp = raw_const<double>(src.buffer())             + src.offset();
     double*       dp = raw_mutable<double>(dst.mutable_buffer())   + dst.offset();
@@ -74,18 +69,14 @@ void CUDAKernelEngine::cuda_copy(const Tensor& src, Tensor& dst) const {
         sp, dp, d_src_stride, d_dst_stride, d_shape, ndim, numel);
 
     if (default_spec_.sync_after) {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         const cudaError_t sync_err = ::cudaStreamSynchronize(default_spec_.stream);
         assert(sync_err == cudaSuccess && "cuda_copy: cudaStreamSynchronize failed");
         (void)sync_err;
     }
 
-    {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        ::cudaFree(d_src_stride);
-        ::cudaFree(d_dst_stride);
-        ::cudaFree(d_shape);
-    }
+    ::cudaFree(d_src_stride);
+    ::cudaFree(d_dst_stride);
+    ::cudaFree(d_shape);
 }
 
 } // namespace otter

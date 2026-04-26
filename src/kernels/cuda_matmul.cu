@@ -4,8 +4,6 @@
 
 #include "otter/tensor.h"
 #include "otter/detail/stride_utils.h"
-#include "otter/detail/cuda_runtime_mutex.h"
-
 #include <cassert>
 #include <cstddef>
 
@@ -81,7 +79,6 @@ void CUDAKernelEngine::cuda_matmul(const Tensor& a, const Tensor& b, Tensor& out
         lhs, rhs, res, M, N, K, bs_a, bs_b, bs_out, total);
 
     if (default_spec_.sync_after) {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         cudaError_t err = ::cudaStreamSynchronize(default_spec_.stream);
         assert(err == cudaSuccess && "cuda_matmul: cudaStreamSynchronize failed");
         (void)err;

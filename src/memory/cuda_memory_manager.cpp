@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "cuda_check.h"
-#include "otter/detail/cuda_runtime_mutex.h"
 #include "otter/detail/debug_log.h"
 #include "otter/detail/math_utils.h"
 
@@ -36,9 +35,8 @@ CUDAMemoryManager::~CUDAMemoryManager() noexcept {
         free_pool_.clear();
     }
 
-    // Release all device memory outside the mutex so shutdown cannot block
-    // other allocator operations while CUDA performs its own cleanup.
-    std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
+    // Release all device memory outside mutex_ so shutdown cannot block other
+    // allocator operations. cudaFree is thread-safe; no external lock needed.
     for (void* p : live_ptrs) ::cudaFree(p);
     for (void* p : pool_ptrs) ::cudaFree(p);
 }
@@ -62,14 +60,12 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
     // ── Small path: direct cudaMalloc, never pooled ───────────────────────────
     if (bytes < kSmallAllocThreshold) {
         void* raw = nullptr;
-        {
-            std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-            const cudaError_t err = ::cudaMalloc(&raw, bytes);
-            if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
-            if (err != cudaSuccess)
-                throw std::runtime_error(
-                    std::string("CUDA error: ") + ::cudaGetErrorString(err));
-        }
+        const cudaError_t err = ::cudaMalloc(&raw, bytes);
+        if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
+        if (err != cudaSuccess)
+            throw std::runtime_error(
+                std::string("CUDA error: ") + ::cudaGetErrorString(err));
+
         auto* ptr = static_cast<std::byte*>(raw);
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -103,14 +99,12 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
 
     // Pool miss: allocate a new segment from the device.
     void* raw = nullptr;
-    {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t err = ::cudaMalloc(&raw, seg);
-        if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
-        if (err != cudaSuccess)
-            throw std::runtime_error(
-                std::string("CUDA error: ") + ::cudaGetErrorString(err));
-    }
+    const cudaError_t err = ::cudaMalloc(&raw, seg);
+    if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
+    if (err != cudaSuccess)
+        throw std::runtime_error(
+            std::string("CUDA error: ") + ::cudaGetErrorString(err));
+
     auto* ptr = static_cast<std::byte*>(raw);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -151,12 +145,13 @@ void CUDAMemoryManager::free(std::byte* ptr) noexcept {
     }
 
     if (!is_large) {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        cudaError_t err = ::cudaFree(static_cast<void*>(ptr));
-        assert(err == cudaSuccess && "CUDAMemoryManager::free: cudaFree failed");
-        (void)err;
+        // cudaFree is thread-safe; no external lock needed.
+        cudaError_t e = ::cudaFree(static_cast<void*>(ptr));
+        assert(e == cudaSuccess && "CUDAMemoryManager::free: cudaFree failed");
+        (void)e;
     }
-    OTTER_DBG("cuda_memory_manager: free done ptr=%p is_large=%d", static_cast<void*>(ptr), static_cast<int>(is_large));
+    OTTER_DBG("cuda_memory_manager: free done ptr=%p is_large=%d",
+              static_cast<void*>(ptr), static_cast<int>(is_large));
 }
 
 void CUDAMemoryManager::release_cache() noexcept {
@@ -173,8 +168,8 @@ void CUDAMemoryManager::release_cache() noexcept {
         free_pool_.clear();
     }
 
-    std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
     // Synchronize device before freeing — documented as a full checkpoint fence.
+    // cudaDeviceSynchronize and cudaFree are thread-safe; no external lock needed.
     cudaError_t err = ::cudaDeviceSynchronize();
     assert(err == cudaSuccess &&
            "CUDAMemoryManager::release_cache: cudaDeviceSynchronize failed");

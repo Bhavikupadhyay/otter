@@ -3,8 +3,6 @@
 #include "cuda_kernel_engine.h"
 
 #include "otter/tensor.h"
-#include "otter/detail/cuda_runtime_mutex.h"
-
 #include <cassert>
 #include <cstddef>
 
@@ -32,7 +30,6 @@ void CUDAKernelEngine::cuda_fill(Tensor& t, double value) const {
     // Synchronize so the fill is complete before returning. Callers (e.g. fill_())
     // may immediately read the tensor on the host via at() / to_vector().
     if (default_spec_.sync_after) {
-        std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
         cudaError_t err = ::cudaStreamSynchronize(default_spec_.stream);
         assert(err == cudaSuccess && "CUDAKernelEngine::cuda_fill: cudaStreamSynchronize failed");
         (void)err;
@@ -43,7 +40,6 @@ double CUDAKernelEngine::cuda_element_read(const Tensor& t, std::size_t flat_idx
     // flat_idx is the pre-computed buffer index from Tensor::at() (offset + stride walk).
     // Sync all streams so any preceding device-side writes to this element are visible,
     // then copy the single element to host via an explicit D→H transfer.
-    std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
     cudaError_t err = ::cudaDeviceSynchronize();
     assert(err == cudaSuccess &&
            "CUDAKernelEngine::cuda_element_read: cudaDeviceSynchronize failed");
@@ -65,7 +61,6 @@ void CUDAKernelEngine::cuda_bulk_host_read(const Tensor& src,
     assert(src.is_contiguous());
     // Sync all streams, then copy the full contiguous array to host via D→H transfer.
     const std::size_t n = src.numel();
-    std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
     cudaError_t err = ::cudaDeviceSynchronize();
     assert(err == cudaSuccess &&
            "CUDAKernelEngine::cuda_bulk_host_read: cudaDeviceSynchronize failed");

@@ -34,9 +34,9 @@ namespace otter {
 // release_cache()   frees all pooled segments; calls cudaDeviceSynchronize
 //                   first (documented checkpoint fence).
 //
-// Lock discipline: cuda_runtime_mutex → mutex_ (never reverse).
-// CUDA API calls happen outside mutex_; pool data structure updates happen
-// outside cuda_runtime_mutex. Prevents holding mutex_ during slow cudaMalloc.
+// Lock discipline: mutex_ protects active_, free_pool_, and byte counters only.
+// CUDA runtime calls (cudaMalloc, cudaFree, cudaMemcpy, etc.) are thread-safe
+// since CUDA 4.0 and need no external serialization.
 class CUDAMemoryManager final : public MemoryManager {
 public:
     static constexpr std::size_t kMinSegmentSize      = 2ULL * 1024ULL * 1024ULL; // 2 MB
