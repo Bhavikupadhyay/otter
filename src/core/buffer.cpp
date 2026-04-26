@@ -4,7 +4,7 @@
 #include <cstring>
 
 #ifdef OTTER_CUDA
-#  include "cuda_check.h"
+#  include "cuda/cuda_check.h"
 #  include "otter/core/device.h"
 #endif
 
