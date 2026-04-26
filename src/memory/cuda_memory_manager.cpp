@@ -44,7 +44,7 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
     if (!detail::is_power_of_2(alignment))
         throw std::invalid_argument(
             "CUDAMemoryManager::allocate: alignment must be a power of 2");
-    // cudaMallocManaged guarantees 256-byte alignment. Larger requirements
+    // cudaMalloc guarantees at least 256-byte alignment. Larger requirements
     // are not supported at this stage.
     if (alignment > 256) {
         throw std::invalid_argument(
@@ -55,7 +55,7 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
     OTTER_DBG("cuda_memory_manager: allocate begin bytes=%zu alignment=%zu", bytes, alignment);
     {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        const cudaError_t err = ::cudaMallocManaged(&raw, bytes);
+        const cudaError_t err = ::cudaMalloc(&raw, bytes);
         if (err == cudaErrorMemoryAllocation) {
             throw std::bad_alloc();
         }

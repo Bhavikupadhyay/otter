@@ -33,35 +33,51 @@ void CUDAKernelEngine::cuda_fill(Tensor& t, double value) const {
     // may immediately read the tensor on the host via at() / to_vector().
     if (default_spec_.sync_after) {
         std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
-        cudaError_t err = ::cudaDeviceSynchronize();
-        assert(err == cudaSuccess && "CUDAKernelEngine::cuda_fill: cudaDeviceSynchronize failed");
+        cudaError_t err = ::cudaStreamSynchronize(default_spec_.stream);
+        assert(err == cudaSuccess && "CUDAKernelEngine::cuda_fill: cudaStreamSynchronize failed");
         (void)err;
     }
 }
 
 double CUDAKernelEngine::cuda_element_read(const Tensor& t, std::size_t flat_idx) const {
     // flat_idx is the pre-computed buffer index from Tensor::at() (offset + stride walk).
-    // Sync ensures any preceding device-side writes are visible to the host.
+    // Sync all streams so any preceding device-side writes to this element are visible,
+    // then copy the single element to host via an explicit D→H transfer.
     std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
     cudaError_t err = ::cudaDeviceSynchronize();
     assert(err == cudaSuccess &&
            "CUDAKernelEngine::cuda_element_read: cudaDeviceSynchronize failed");
     (void)err;
-    return raw_const<double>(t.buffer())[flat_idx];
+    double val = 0.0;
+    err = ::cudaMemcpy(&val,
+                       raw_const<double>(t.buffer()) + flat_idx,
+                       sizeof(double),
+                       cudaMemcpyDeviceToHost);
+    assert(err == cudaSuccess &&
+           "CUDAKernelEngine::cuda_element_read: cudaMemcpy failed");
+    (void)err;
+    return val;
 }
 
 void CUDAKernelEngine::cuda_bulk_host_read(const Tensor& src,
                                             std::vector<double>& dst) const {
     // Precondition: src is contiguous — caller (Tensor::to) calls contiguous() first.
     assert(src.is_contiguous());
-    // One sync for the whole read; unified memory is host-accessible after this.
+    // Sync all streams, then copy the full contiguous array to host via D→H transfer.
+    const std::size_t n = src.numel();
     std::lock_guard<std::mutex> runtime_lock(detail::cuda_runtime_mutex());
     cudaError_t err = ::cudaDeviceSynchronize();
     assert(err == cudaSuccess &&
            "CUDAKernelEngine::cuda_bulk_host_read: cudaDeviceSynchronize failed");
     (void)err;
-    const double* ptr = raw_const<double>(src.buffer()) + src.offset();
-    dst.assign(ptr, ptr + src.numel());
+    dst.resize(n);
+    err = ::cudaMemcpy(dst.data(),
+                       raw_const<double>(src.buffer()) + src.offset(),
+                       n * sizeof(double),
+                       cudaMemcpyDeviceToHost);
+    assert(err == cudaSuccess &&
+           "CUDAKernelEngine::cuda_bulk_host_read: cudaMemcpy failed");
+    (void)err;
 }
 
 } // namespace otter
