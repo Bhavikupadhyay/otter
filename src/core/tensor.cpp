@@ -35,6 +35,8 @@
 #  include "otter/backends/cuda.h"
 #endif
 
+#include "core/autograd/graph_executor.h"
+
 namespace otter {
 
 namespace {
@@ -481,22 +483,35 @@ void Tensor::backward(bool retain_graph) {
 void Tensor::backward(Tensor seed, bool retain_graph) {
     if (!defined())
         throw std::runtime_error("backward: called on undefined Tensor");
+    GraphExecutor::instance().run(*this, std::move(seed), retain_graph);
+}
 
+// ── Tensor::backward_impl ─────────────────────────────────────────────────────
+//
+// Full backward pass: DFS, dep-count setup, grad clearing, seed, traversal,
+// cleanup. Called by GraphExecutor::run(). Static so it can access private
+// fields of any Tensor passed to it (GraphExecutor is a friend).
+//
+// §4.1 Step 1: executes sequentially on the calling thread. cuda_backward_mtx
+// remains here until Step 4b when the dep-count model makes it redundant.
+
+void Tensor::backward_impl(Tensor& root, Tensor seed, bool retain_graph) {
 #ifdef OTTER_CUDA
     // CUDA backward is currently serialized to avoid driver/runtime instability
     // under multi-threaded graph execution on shared backend state.
+    // Removed in Step 4b once GraphExecutor's dep-count model makes this redundant.
     static std::mutex cuda_backward_mtx;
     std::unique_lock<std::mutex> cuda_backward_lock;
-    if (backend_ && backend_->memory_manager()->device() == Device::CUDA) {
+    if (root.backend_ && root.backend_->memory_manager()->device() == Device::CUDA) {
         cuda_backward_lock = std::unique_lock<std::mutex>(cuda_backward_mtx);
     }
 #endif
 
     // ── 1. Build topological order (DFS post-order → reverse = loss first) ───
-    OTTER_DBG("backward: phase1 DFS begin  this=%p", static_cast<const void*>(this));
+    OTTER_DBG("backward: phase1 DFS begin  root=%p", static_cast<const void*>(&root));
     std::vector<Tensor>                 order;
     std::unordered_set<ops::Operation*> visited;
-    topo_dfs(*this, visited, order);
+    topo_dfs(root, visited, order);
     std::reverse(order.begin(), order.end());
     OTTER_DBG("backward: phase1 DFS done   order.size=%zu", order.size());
 
@@ -515,13 +530,12 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
         }
     }
 
-    // ── 3. Seed this tensor's gradient ───────────────────────────────────────
+    // ── 3. Seed root tensor's gradient ───────────────────────────────────────
     // Assign (not accumulate) the seed. After clearing intermediates above,
-    // this tensor's grad_accum_ is empty; assigning directly is equivalent
-    // to a fresh start for this node's gradient.
+    // root's grad_accum_ is empty; assigning directly is a fresh start.
     // Lock: a concurrent grad() call must not observe a half-written seed.
-    OTTER_DBG("backward: phase3 seed  this=%p", static_cast<const void*>(this));
-    auto root_acc = get_or_create_grad_accum(&grad_accum_);
+    OTTER_DBG("backward: phase3 seed  root=%p", static_cast<const void*>(&root));
+    auto root_acc = get_or_create_grad_accum(&root.grad_accum_);
     {
         std::lock_guard<std::mutex> lock(root_acc->mtx);
         root_acc->grad_tensor = std::move(seed);
@@ -530,7 +544,7 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
     // ── 4. Backward traversal — compute gradients, no graph mutation ─────────
     // Mutation (clear_saved) is deferred to a separate cleanup pass below.
     // This decouples gradient computation (read-only) from graph mutation (write),
-    // which is a prerequisite for future parallel backward passes.
+    // which is a prerequisite for the parallel dep-count dispatch in Step 3.
     OTTER_DBG("backward: phase4 traversal begin  order.size=%zu", order.size());
     for (const Tensor& node : order) {
         if (!node.grad_op_) continue;
@@ -559,13 +573,11 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
         OTTER_DBG("backward: phase4 calling op::backward  op=%p saved=%zu",
                   static_cast<const void*>(node.grad_op_.get()), saved.size());
 
-        // Run the operation's backward pass.
         auto input_grads = node.grad_op_->backward({node_grad});
 
         OTTER_DBG("backward: phase4 op::backward done  op=%p grads=%zu",
                   static_cast<const void*>(node.grad_op_.get()), input_grads.size());
 
-        // Accumulate each input gradient into the corresponding saved input.
         for (std::size_t i = 0; i < saved.size() && i < input_grads.size(); ++i) {
             if (saved[i].requires_grad() && input_grads[i].defined()) {
                 OTTER_DBG("backward: phase4 accumulate  i=%zu req_grad=1", i);
@@ -578,16 +590,16 @@ void Tensor::backward(Tensor seed, bool retain_graph) {
 
     // ── 5. Cleanup pass — release saved state after all grads are accumulated ─
     // Separate from the traversal above so the backward loop is mutation-free.
-    // clear_saved() also resets grad_op_ on each saved input to break reference
-    // chains and allow Operations to be freed as soon as they are unreachable.
+    // clear_saved() resets grad_op_ on each saved input to break reference chains
+    // and allow Operations to be freed as soon as they become unreachable.
     OTTER_DBG("backward: phase5 cleanup  retain=%d", static_cast<int>(retain_graph));
     if (!retain_graph) {
         for (const Tensor& node : order) {
             if (node.grad_op_) node.grad_op_->clear_saved();
         }
-        // Null out the root tensor's grad_op_ so a second backward() call throws
-        // a clear error instead of silently double-counting gradients.
-        grad_op_ = nullptr;
+        // Null out root's grad_op_ so a second backward() call throws a clear
+        // error instead of silently double-counting gradients.
+        root.grad_op_ = nullptr;
     }
     OTTER_DBG("backward: done");
 }

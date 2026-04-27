@@ -8,6 +8,7 @@ target_include_directories(otter_core
 target_sources(otter_core PRIVATE
     core/buffer.cpp
     core/backend.cpp
+    core/autograd/graph_executor.cpp
 )
 
 add_subdirectory(cpu)
