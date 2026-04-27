@@ -8,6 +8,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <deque>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "otter/detail/debug_log.h"
@@ -541,12 +543,46 @@ void Tensor::backward_impl(Tensor& root, Tensor seed, bool retain_graph) {
         root_acc->grad_tensor = std::move(seed);
     }
 
-    // ── 4. Backward traversal — compute gradients, no graph mutation ─────────
-    // Mutation (clear_saved) is deferred to a separate cleanup pass below.
-    // This decouples gradient computation (read-only) from graph mutation (write),
-    // which is a prerequisite for the parallel dep-count dispatch in Step 3.
-    OTTER_DBG("backward: phase4 traversal begin  order.size=%zu", order.size());
+    // ── 4. Dep-count ready-queue traversal (single-threaded) ─────────────────
+    //
+    // dep_counts[op] = number of ops in this graph whose backward() will produce
+    // a gradient contribution destined for op. An op becomes ready when its
+    // dep_count reaches zero — all expected gradient contributions have arrived.
+    //
+    // Building the counts: for every op X in the graph, for every saved input I
+    // of X that has its own grad_op_, increment dep_counts[I.grad_op_].
+    // This records: "X's backward will accumulate one gradient into I, so I's
+    // producing op needs to wait for X."
+    //
+    // Step 3 promotes this to parallel workers; dep_counts become atomic<int>
+    // and the ready_queue moves into GraphExecutor.
+    OTTER_DBG("backward: phase4 dep_count build  order.size=%zu", order.size());
+    std::unordered_map<ops::Operation*, int> dep_counts;
+    dep_counts.reserve(order.size());
     for (const Tensor& node : order) {
+        if (!node.grad_op_) continue;
+        dep_counts.emplace(node.grad_op_.get(), 0);  // ensure entry exists
+        for (const Tensor& inp : node.grad_op_->inputs()) {
+            if (inp.requires_grad() && inp.grad_op_)
+                dep_counts[inp.grad_op_.get()]++;
+        }
+    }
+
+    // Seed the ready queue with ops whose dep_count is zero.
+    // In a single-root graph this is exactly the root op (the one that produced
+    // the loss tensor). Ops deeper in the graph wait until their predecessors
+    // have accumulated all gradient contributions.
+    std::deque<Tensor> ready;
+    for (const Tensor& node : order) {
+        if (node.grad_op_ && dep_counts[node.grad_op_.get()] == 0)
+            ready.push_back(node);
+    }
+    OTTER_DBG("backward: phase4 ready_queue seeded  ready.size=%zu", ready.size());
+
+    while (!ready.empty()) {
+        Tensor node = std::move(ready.front());
+        ready.pop_front();
+
         if (!node.grad_op_) continue;
 
         OTTER_DBG("backward: phase4 node  op=%p", static_cast<const void*>(node.grad_op_.get()));
@@ -564,9 +600,8 @@ void Tensor::backward_impl(Tensor& root, Tensor seed, bool retain_graph) {
         }
         // Lock released. node_grad is a private copy — safe to pass to backward.
 
-        // Snapshot saved inputs under saved_mtx_ before calling backward().
-        // If clear_saved() runs on another thread (shared-graph scenario), our
-        // snapshot remains valid; the backward() call uses captured inputs.
+        // Snapshot saved inputs before calling backward(). Safe against a
+        // concurrent clear_saved() (retain_graph scenario).
         const std::vector<Tensor> saved = node.grad_op_->snapshot_inputs();
         if (saved.empty()) continue;  // graph was cleared by another backward pass
 
@@ -578,11 +613,22 @@ void Tensor::backward_impl(Tensor& root, Tensor seed, bool retain_graph) {
         OTTER_DBG("backward: phase4 op::backward done  op=%p grads=%zu",
                   static_cast<const void*>(node.grad_op_.get()), input_grads.size());
 
+        // Accumulate each input gradient, then decrement the predecessor op's
+        // dep_count. When it hits zero, all contributions have arrived — enqueue.
         for (std::size_t i = 0; i < saved.size() && i < input_grads.size(); ++i) {
-            if (saved[i].requires_grad() && input_grads[i].defined()) {
-                OTTER_DBG("backward: phase4 accumulate  i=%zu req_grad=1", i);
-                saved[i].accumulate_grad(input_grads[i]);
-                OTTER_DBG("backward: phase4 accumulate done  i=%zu", i);
+            if (!saved[i].requires_grad() || !input_grads[i].defined()) continue;
+
+            OTTER_DBG("backward: phase4 accumulate  i=%zu req_grad=1", i);
+            saved[i].accumulate_grad(input_grads[i]);
+            OTTER_DBG("backward: phase4 accumulate done  i=%zu", i);
+
+            if (!saved[i].grad_op_) continue;
+            auto it = dep_counts.find(saved[i].grad_op_.get());
+            if (it == dep_counts.end()) continue;
+            if (--it->second == 0) {
+                OTTER_DBG("backward: phase4 enqueue  op=%p",
+                          static_cast<const void*>(saved[i].grad_op_.get()));
+                ready.push_back(saved[i]);
             }
         }
     }
