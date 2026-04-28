@@ -17,6 +17,12 @@ CUDABackend::CUDABackend()
     engine->default_spec_.stream = stream_.raw();
 }
 
+void CUDABackend::end_backward_sync() noexcept {
+    cudaError_t err = ::cudaStreamSynchronize(stream_.raw());
+    assert(err == cudaSuccess && "CUDABackend::end_backward_sync: cudaStreamSynchronize failed");
+    (void)err;
+}
+
 // cuda_backend() — returns the singleton CUDA Backend.
 //
 // C++11 magic static: initialised exactly once, thread-safe.

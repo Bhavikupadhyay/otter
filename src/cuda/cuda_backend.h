@@ -17,6 +17,7 @@ public:
     CUDABackend();
 
     [[nodiscard]] Stream* default_stream() noexcept override { return &stream_; }
+    void end_backward_sync() noexcept override;
 
 private:
     CUDAStream stream_;  // owned; constructed after mm/ke are moved into Backend

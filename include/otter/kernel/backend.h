@@ -49,6 +49,12 @@ public:
     // unchanged. A CUDA backend subclass overrides this to return a real stream.
     [[nodiscard]] virtual Stream* default_stream() noexcept { return nullptr; }
 
+    // Blocks until all device-side work submitted through this backend has completed.
+    // Called by GraphExecutor between Phase 4 (workers drain) and Phase 5 (clear_saved)
+    // so that no Buffer is freed while a GPU kernel is still writing it.
+    // CPU default is a no-op. CUDA override calls cudaStreamSynchronize.
+    virtual void end_backward_sync() noexcept {}
+
 private:
     std::unique_ptr<MemoryManager> mm_;
     std::unique_ptr<KernelEngine>  ke_;

@@ -124,9 +124,11 @@ void launch_binary_strided(CUDAKernelEngine* engine,
     e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
     e = ::cudaMalloc(&d_strides_b, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
 
-    e = ::cudaMemcpy(d_shape,     out.shape().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_strides_a, a.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_strides_b, b.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+    // Async copies: queued on spec.stream, complete before the kernel reads them
+    // because all three are submitted ahead of the kernel on the same stream.
+    e = ::cudaMemcpyAsync(d_shape,     out.shape().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
+    e = ::cudaMemcpyAsync(d_strides_a, a.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
+    e = ::cudaMemcpyAsync(d_strides_b, b.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
 
     const double* pa = engine->raw_ptr<double>(a.buffer())               + a.offset();
     const double* pb = engine->raw_ptr<double>(b.buffer())               + b.offset();
@@ -144,9 +146,11 @@ void launch_binary_strided(CUDAKernelEngine* engine,
         (void)err;
     }
 
-    ::cudaFree(d_shape);
-    ::cudaFree(d_strides_a);
-    ::cudaFree(d_strides_b);
+    // Stream-ordered free: driver queues these behind the kernel on spec.stream.
+    // Safe whether sync_after is true or false. Requires CUDA 11.2+.
+    ::cudaFreeAsync(d_shape,     spec.stream);
+    ::cudaFreeAsync(d_strides_a, spec.stream);
+    ::cudaFreeAsync(d_strides_b, spec.stream);
 }
 
 // ── Unary launch helpers ──────────────────────────────────────────────────────
@@ -184,8 +188,8 @@ void launch_unary_strided(CUDAKernelEngine* engine,
     e = ::cudaMalloc(&d_shape,     ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
     e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
 
-    e = ::cudaMemcpy(d_shape,     out.shape().data(), ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMemcpy(d_strides_a, a.stride().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice); assert(e == cudaSuccess); (void)e;
+    e = ::cudaMemcpyAsync(d_shape,     out.shape().data(), ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
+    e = ::cudaMemcpyAsync(d_strides_a, a.stride().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
 
     const double* pa = engine->raw_ptr<double>(a.buffer())               + a.offset();
     double*       po = engine->mutable_ptr<double>(out.mutable_buffer()) + out.offset();
@@ -202,8 +206,8 @@ void launch_unary_strided(CUDAKernelEngine* engine,
         (void)err;
     }
 
-    ::cudaFree(d_shape);
-    ::cudaFree(d_strides_a);
+    ::cudaFreeAsync(d_shape,     spec.stream);
+    ::cudaFreeAsync(d_strides_a, spec.stream);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,16 +217,17 @@ void launch_unary_strided(CUDAKernelEngine* engine,
 template<typename F>
 struct CUDAElementwiseBinaryKernel final : KernelEngine::BinaryDispatcher {
     CUDAKernelEngine* engine_;
-    LaunchSpec        spec_;
 
-    CUDAElementwiseBinaryKernel(CUDAKernelEngine* e, LaunchSpec s)
-        : engine_(e), spec_(s) {}
+    explicit CUDAElementwiseBinaryKernel(CUDAKernelEngine* e) : engine_(e) {}
 
     void call(const Tensor& a, const Tensor& b, Tensor& out) const override {
+        // Read default_spec_ at call time so stream/sync_after changes in the
+        // engine (e.g. after CUDABackend sets the stream) are picked up correctly.
+        const LaunchSpec& spec = engine_->default_spec_;
         if (a.is_contiguous() && b.is_contiguous()) {
-            launch_binary_contiguous<F>(engine_, a, b, out, spec_);
+            launch_binary_contiguous<F>(engine_, a, b, out, spec);
         } else {
-            launch_binary_strided<F>(engine_, a, b, out, spec_);
+            launch_binary_strided<F>(engine_, a, b, out, spec);
         }
     }
 };
@@ -230,16 +235,15 @@ struct CUDAElementwiseBinaryKernel final : KernelEngine::BinaryDispatcher {
 template<typename F>
 struct CUDAElementwiseUnaryKernel final : KernelEngine::UnaryDispatcher {
     CUDAKernelEngine* engine_;
-    LaunchSpec        spec_;
 
-    CUDAElementwiseUnaryKernel(CUDAKernelEngine* e, LaunchSpec s)
-        : engine_(e), spec_(s) {}
+    explicit CUDAElementwiseUnaryKernel(CUDAKernelEngine* e) : engine_(e) {}
 
     void call(const Tensor& a, Tensor& out) const override {
+        const LaunchSpec& spec = engine_->default_spec_;
         if (a.is_contiguous()) {
-            launch_unary_contiguous<F>(engine_, a, out, spec_);
+            launch_unary_contiguous<F>(engine_, a, out, spec);
         } else {
-            launch_unary_strided<F>(engine_, a, out, spec_);
+            launch_unary_strided<F>(engine_, a, out, spec);
         }
     }
 };

@@ -207,6 +207,13 @@ void GraphExecutor::run(Tensor& root, Tensor seed, bool retain_graph) {
         done_cv_.wait(qlock, [this] { return pending_.load(std::memory_order_acquire) == 0; });
     }
 
+    // Fence the device stream: all GPU kernels from this backward pass must
+    // complete before Phase 5 drops Buffer refs (potentially triggering cudaFree).
+    // No-op on CPU. Design note: coupling GraphExecutor to Backend device lifecycle
+    // is a known impurity; the clean fix is a two-phase run() so Tensor::backward()
+    // can interpose the sync. Deferred until that split is warranted.
+    root.backend().end_backward_sync();
+
     // ── Phase 5: cleanup ──────────────────────────────────────────────────────
     if (!retain_graph) {
         for (const Tensor& node : order)
