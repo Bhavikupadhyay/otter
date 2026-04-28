@@ -130,6 +130,11 @@ CUDAKernelEngine::CUDAKernelEngine() {
     register_copy  (std::make_unique<CUDACopyDispatcher>  (this));
     register_scale (std::make_unique<CUDAScaleDispatcher> (this));
     register_axpy  (std::make_unique<CUDAAxpyDispatcher>  (this));
+
+    // §4.2: async kernel launches. Fences are now at graph boundaries only:
+    // cudaStreamSynchronize in element_read/bulk_host_read (before host reads),
+    // and CUDABackend::end_backward_sync() (before Phase 5 buffer cleanup).
+    default_spec_.sync_after = false;
 }
 
 } // namespace otter
