@@ -283,13 +283,8 @@ private:
     // grad_accum_, grad_op_) on output tensors directly via friend access.
     friend class ops::Operation;
 
-    // GraphExecutor drives the backward pass and calls backward_impl().
+    // GraphExecutor drives the backward pass — full access to autograd fields.
     friend class GraphExecutor;
-
-    // Full backward implementation — called by GraphExecutor::run().
-    // Owns Phase 1–5: DFS, dep-count setup, grad clearing, seed, traversal,
-    // cleanup. Private because callers must go through GraphExecutor.
-    static void backward_impl(Tensor& root, Tensor seed, bool retain_graph);
 };
 
 
