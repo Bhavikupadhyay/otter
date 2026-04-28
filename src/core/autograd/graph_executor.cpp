@@ -5,12 +5,6 @@
 #include <unordered_set>
 
 #include "otter/tensor.h"
-#include "otter/memory/memory_manager.h"
-#include "otter/core/device.h"
-
-#ifdef OTTER_CUDA
-#  include "otter/backends/cuda.h"
-#endif
 
 namespace otter {
 
@@ -132,20 +126,10 @@ void GraphExecutor::process_node(Tensor node) {
 //   Phase 4: build dep_counts, seed ready_queue, dispatch to workers, wait
 //   Phase 5: cleanup (clear_saved, null root grad_op_)
 //
-// run_mtx_ ensures one pass at a time; cuda_backward_mtx (§4.1 only) adds
-// an outer CUDA-specific gate that Step 4b will remove.
+// run_mtx_ ensures one pass at a time.
 
 void GraphExecutor::run(Tensor& root, Tensor seed, bool retain_graph) {
     std::lock_guard<std::mutex> run_lock(run_mtx_);
-
-#ifdef OTTER_CUDA
-    // Serializes CUDA backward until Step 4b removes this block.
-    // The dep-count model alone makes it redundant once workers are trusted.
-    static std::mutex cuda_backward_mtx;
-    std::unique_lock<std::mutex> cuda_backward_lock;
-    if (root.backend_ && root.backend_->memory_manager()->device() == Device::CUDA)
-        cuda_backward_lock = std::unique_lock<std::mutex>(cuda_backward_mtx);
-#endif
 
     // ── Phase 1: topological DFS ──────────────────────────────────────────────
     std::vector<Tensor>                  order;

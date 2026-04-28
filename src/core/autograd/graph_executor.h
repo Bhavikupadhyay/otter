@@ -30,8 +30,7 @@ namespace otter {
 // This is correct for single-model training loops. Multi-pass concurrency is a
 // future concern (requires per-pass context structs).
 //
-// CUDA guard: cuda_backward_mtx inside run() serializes CUDA backward until
-// Step 4b removes it; the dep-count model alone makes it redundant then.
+// The dep-count model provides correctness for concurrent CUDA backward passes.
 class GraphExecutor {
 public:
     [[nodiscard]] static GraphExecutor& instance();
