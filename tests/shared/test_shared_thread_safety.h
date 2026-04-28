@@ -106,12 +106,53 @@ inline void test_zero_grad_interleaved_with_backward(Backend& be) {
     ++otter::test::tests_passed;
 }
 
+// ── Test 4: fan-out graph — dep-count engine correctness ─────────────────────
+//
+// Validates that GraphExecutor's dep-count model correctly handles a node whose
+// output is consumed by two independent operations (fan-out in the forward graph
+// = fan-in for gradient accumulation in the backward graph).
+//
+// Graph:
+//   leaf L (requires_grad)
+//     → MulOp(×2) → T
+//         → AddOp_B(T + zeros) → sum_B ─┐
+//         → AddOp_C(T + zeros) → sum_C ─┴→ loss = sum_B + sum_C
+//
+// Analytical gradient: d(loss)/dL = 4 * ones (chain: loss→T: 2×[1,1], T→L: ×2)
+//
+// MulOp's dep_count = 2 in the backward graph: both AddOp_B and AddOp_C must
+// accumulate their gradients into T before MulOp can backward. Running 500
+// iterations makes any race or incorrect dep-count wiring statistically visible.
+
+inline void test_fan_out_dep_count(Backend& be) {
+    std::cout << "[ThreadSafety 4] Fan-out graph: dep-count engine produces correct gradient (500 iters)\n";
+
+    for (int iter = 0; iter < 500; ++iter) {
+        Tensor L = Tensor::from_data<double>({1.0, 1.0}, {2}, be, /*requires_grad=*/true);
+
+        Tensor two   = Tensor::from_data<double>({2.0, 2.0}, {2}, be);
+        Tensor zeros = Tensor::from_data<double>({0.0, 0.0}, {2}, be);
+
+        Tensor T      = L.mul(two);
+        Tensor sum_B  = T.add(zeros).sum();
+        Tensor sum_C  = T.add(zeros).sum();
+        Tensor loss   = sum_B.add(sum_C);
+
+        loss.backward();
+
+        // Each element of L.grad() must equal 4.0 — every iteration, deterministically.
+        CHECK_NEAR(L.grad().at({0}), 4.0, 1e-9);
+        CHECK_NEAR(L.grad().at({1}), 4.0, 1e-9);
+    }
+}
+
 // ── run all ──────────────────────────────────────────────────────────────────
 
 inline void run_shared_thread_safety(Backend& be) {
     test_grad_safe_concurrent_reads(be);
     test_concurrent_backward_separate_graphs(be);
     test_zero_grad_interleaved_with_backward(be);
+    test_fan_out_dep_count(be);
 }
 
 } // namespace otter::test::shared
