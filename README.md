@@ -103,11 +103,13 @@ otter::Tensor host = d.cpu();
 otter::Tensor back = host.cuda();
 ```
 
-`cuda_backend()` allocates via `cudaMallocManaged` (unified memory). `Tensor::cuda()` and `Tensor::cpu()` copy data across devices in one `cudaMemcpy` call. Non-contiguous CUDA tensors must be made contiguous before moving to CPU.
+`cuda_backend()` allocates via `cudaMalloc` (device memory). `Tensor::cuda()` and `Tensor::cpu()` copy data across devices in one `cudaMemcpy` call. Non-contiguous CUDA tensors must be made contiguous before moving to CPU.
+
+Kernels launch asynchronously on a non-default `cudaStream_t` owned by the backend. The host does not stall after each kernel. Synchronization occurs at graph boundaries only: once per backward pass (after all workers drain, before gradient buffers are freed) and once per host read (`at()` / `to_vector()`). This eliminates the per-kernel `cudaStreamSynchronize` that was the dominant latency in training loops.
 
 Double-precision atomic accumulations (used by `sum` and `reduce_to`) use a portable CAS loop that works on SM 2.0+. Hardware `atomicAdd(double*)` (SM 6.0+) is not required.
 
-The current CUDA implementation is correctness-first and conservatively synchronized. In particular, kernel launches, allocator interactions, and backward execution are coordinated in a way that makes the CUDA path effectively serialized today, even though the public surface already exposes stream-aware concepts. This keeps behavior predictable while the async execution model and memory-lifetime rules are still being hardened.
+The CUDA memory manager maintains a pool allocator (`free_pool_` multimap, 2 MB minimum segment). Freed buffers are returned to the pool and reused on the next allocation of equal or smaller size. `release_cache()` returns all pooled memory to the driver.
 
 ---
 
@@ -115,9 +117,9 @@ The current CUDA implementation is correctness-first and conservatively synchron
 
 `grad()`, `zero_grad()`, and `accumulate_grad()` are mutex-protected via `GradAccumulator::mtx`. Concurrent reads and writes on the same leaf's gradient are safe from any thread.
 
-Concurrent `backward()` calls on separate computation graphs that share a leaf weight are safe. The canonical data-parallel pattern — N threads each computing loss and calling `backward()`, one shared weight tensor — works without external synchronization.
+Concurrent `backward()` calls on separate computation graphs that share a leaf weight are safe. The canonical data-parallel pattern — N threads each computing loss and calling `backward()`, one shared weight tensor — works without external synchronization on both CPU and CUDA.
 
-On CUDA, this safety model currently relies on conservative synchronization rather than overlapping execution. The CUDA path is thread-safe for the supported patterns, but it should not yet be interpreted as a fully asynchronous multi-stream execution engine.
+`backward()` is driven by `GraphExecutor`, a singleton dep-count ready-queue engine with a 4-worker thread pool. Independent nodes in the computation graph execute in parallel; gradient accumulation into a shared leaf is serialized by `GradAccumulator::mtx`. One backward pass runs at a time (`run_mtx_`); a second call to `backward()` blocks until the first completes. On CUDA, the backend stream is flushed at the end of each pass before any gradient buffers are released.
 
 `SGD::step()` is not safe for concurrent calls on the same optimizer. `dispatch_scale` and `dispatch_axpy` write directly into parameter and velocity buffers. Call `step()` from one thread after all backward passes have joined.
 

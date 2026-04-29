@@ -108,18 +108,19 @@ CUDAKernelEngine::CUDAKernelEngine() {
     register_bulk_host_read(std::make_unique<CUDABulkHostReadDispatcher> (this));
 
     // Binary element-wise: template dispatchers with contiguous/strided routing.
-    register_binary(KernelType::Add, std::make_unique<CUDAElementwiseBinaryKernel<AddFunctor>>(this, default_spec_));
-    register_binary(KernelType::Sub, std::make_unique<CUDAElementwiseBinaryKernel<SubFunctor>>(this, default_spec_));
-    register_binary(KernelType::Mul, std::make_unique<CUDAElementwiseBinaryKernel<MulFunctor>>(this, default_spec_));
-    register_binary(KernelType::Div, std::make_unique<CUDAElementwiseBinaryKernel<DivFunctor>>(this, default_spec_));
+    // Dispatchers read engine_->default_spec_ at call time — no LaunchSpec copy.
+    register_binary(KernelType::Add, std::make_unique<CUDAElementwiseBinaryKernel<AddFunctor>>(this));
+    register_binary(KernelType::Sub, std::make_unique<CUDAElementwiseBinaryKernel<SubFunctor>>(this));
+    register_binary(KernelType::Mul, std::make_unique<CUDAElementwiseBinaryKernel<MulFunctor>>(this));
+    register_binary(KernelType::Div, std::make_unique<CUDAElementwiseBinaryKernel<DivFunctor>>(this));
 
     // Unary element-wise: template dispatchers with contiguous/strided routing.
-    register_unary(KernelType::Neg,      std::make_unique<CUDAElementwiseUnaryKernel<NegFunctor>     >(this, default_spec_));
-    register_unary(KernelType::Exp,      std::make_unique<CUDAElementwiseUnaryKernel<ExpFunctor>     >(this, default_spec_));
-    register_unary(KernelType::Log,      std::make_unique<CUDAElementwiseUnaryKernel<LogFunctor>     >(this, default_spec_));
-    register_unary(KernelType::Sqrt,     std::make_unique<CUDAElementwiseUnaryKernel<SqrtFunctor>    >(this, default_spec_));
-    register_unary(KernelType::Relu,     std::make_unique<CUDAElementwiseUnaryKernel<ReluFunctor>    >(this, default_spec_));
-    register_unary(KernelType::ReluMask, std::make_unique<CUDAElementwiseUnaryKernel<ReluMaskFunctor>>(this, default_spec_));
+    register_unary(KernelType::Neg,      std::make_unique<CUDAElementwiseUnaryKernel<NegFunctor>     >(this));
+    register_unary(KernelType::Exp,      std::make_unique<CUDAElementwiseUnaryKernel<ExpFunctor>     >(this));
+    register_unary(KernelType::Log,      std::make_unique<CUDAElementwiseUnaryKernel<LogFunctor>     >(this));
+    register_unary(KernelType::Sqrt,     std::make_unique<CUDAElementwiseUnaryKernel<SqrtFunctor>    >(this));
+    register_unary(KernelType::Relu,     std::make_unique<CUDAElementwiseUnaryKernel<ReluFunctor>    >(this));
+    register_unary(KernelType::ReluMask, std::make_unique<CUDAElementwiseUnaryKernel<ReluMaskFunctor>>(this));
 
     // Reduction, copy, matmul, inplace: retained engine-method pattern.
     register_unary(KernelType::ReduceSum, std::make_unique<CUDAReduceSumDispatcher>(this));
@@ -129,6 +130,11 @@ CUDAKernelEngine::CUDAKernelEngine() {
     register_copy  (std::make_unique<CUDACopyDispatcher>  (this));
     register_scale (std::make_unique<CUDAScaleDispatcher> (this));
     register_axpy  (std::make_unique<CUDAAxpyDispatcher>  (this));
+
+    // §4.2: async kernel launches. Fences are now at graph boundaries only:
+    // cudaStreamSynchronize in element_read/bulk_host_read (before host reads),
+    // and CUDABackend::end_backward_sync() (before Phase 5 buffer cleanup).
+    default_spec_.sync_after = false;
 }
 
 } // namespace otter

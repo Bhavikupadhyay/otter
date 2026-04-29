@@ -21,6 +21,7 @@ namespace otter {
 // Forward declarations — full definitions follow after Tensor or in other headers.
 struct GradAccumulator;  // defined below, after Tensor (needs Tensor to be complete)
 namespace ops { class Operation; }  // defined in include/otter/ops/operation.h
+class GraphExecutor;     // defined in src/core/autograd/graph_executor.h
 
 // Tensor — value-type multi-dimensional array.
 //
@@ -281,6 +282,9 @@ private:
     // Operation::execute() sets autograd fields (is_leaf_, requires_grad_,
     // grad_accum_, grad_op_) on output tensors directly via friend access.
     friend class ops::Operation;
+
+    // GraphExecutor drives the backward pass — full access to autograd fields.
+    friend class GraphExecutor;
 };
 
 

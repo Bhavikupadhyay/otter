@@ -35,6 +35,8 @@
 #  include "otter/backends/cuda.h"
 #endif
 
+#include "core/autograd/graph_executor.h"
+
 namespace otter {
 
 namespace {
@@ -481,115 +483,7 @@ void Tensor::backward(bool retain_graph) {
 void Tensor::backward(Tensor seed, bool retain_graph) {
     if (!defined())
         throw std::runtime_error("backward: called on undefined Tensor");
-
-#ifdef OTTER_CUDA
-    // CUDA backward is currently serialized to avoid driver/runtime instability
-    // under multi-threaded graph execution on shared backend state.
-    static std::mutex cuda_backward_mtx;
-    std::unique_lock<std::mutex> cuda_backward_lock;
-    if (backend_ && backend_->memory_manager()->device() == Device::CUDA) {
-        cuda_backward_lock = std::unique_lock<std::mutex>(cuda_backward_mtx);
-    }
-#endif
-
-    // ── 1. Build topological order (DFS post-order → reverse = loss first) ───
-    OTTER_DBG("backward: phase1 DFS begin  this=%p", static_cast<const void*>(this));
-    std::vector<Tensor>                 order;
-    std::unordered_set<ops::Operation*> visited;
-    topo_dfs(*this, visited, order);
-    std::reverse(order.begin(), order.end());
-    OTTER_DBG("backward: phase1 DFS done   order.size=%zu", order.size());
-
-    // ── 2. Clear intermediate (non-leaf) gradients ────────────────────────────
-    // On a second backward call (retain_graph=true first), intermediate nodes
-    // still hold gradients from the previous pass. Clear them so each backward
-    // starts fresh for intermediates. Leaf gradients are NOT cleared here —
-    // they accumulate across multiple backward calls (the expected behaviour).
-    // Lock each node's accumulator: a concurrent grad() call must not see a
-    // partial write (e.g. a grad_tensor mid-assignment).
-    for (const Tensor& node : order) {
-        auto node_acc = load_grad_accum(&node.grad_accum_);
-        if (!node.is_leaf_ && node_acc) {
-            std::lock_guard<std::mutex> lock(node_acc->mtx);
-            node_acc->grad_tensor = Tensor{};
-        }
-    }
-
-    // ── 3. Seed this tensor's gradient ───────────────────────────────────────
-    // Assign (not accumulate) the seed. After clearing intermediates above,
-    // this tensor's grad_accum_ is empty; assigning directly is equivalent
-    // to a fresh start for this node's gradient.
-    // Lock: a concurrent grad() call must not observe a half-written seed.
-    OTTER_DBG("backward: phase3 seed  this=%p", static_cast<const void*>(this));
-    auto root_acc = get_or_create_grad_accum(&grad_accum_);
-    {
-        std::lock_guard<std::mutex> lock(root_acc->mtx);
-        root_acc->grad_tensor = std::move(seed);
-    }
-
-    // ── 4. Backward traversal — compute gradients, no graph mutation ─────────
-    // Mutation (clear_saved) is deferred to a separate cleanup pass below.
-    // This decouples gradient computation (read-only) from graph mutation (write),
-    // which is a prerequisite for future parallel backward passes.
-    OTTER_DBG("backward: phase4 traversal begin  order.size=%zu", order.size());
-    for (const Tensor& node : order) {
-        if (!node.grad_op_) continue;
-
-        OTTER_DBG("backward: phase4 node  op=%p", static_cast<const void*>(node.grad_op_.get()));
-
-        // Copy the node's gradient under the accumulator lock, then release
-        // before calling backward(). Prevents a concurrent accumulate_grad()
-        // or zero_grad() from racing with our read of grad_tensor.
-        Tensor node_grad;
-        {
-            auto node_acc = load_grad_accum(&node.grad_accum_);
-            if (!node_acc) continue;
-            std::lock_guard<std::mutex> lock(node_acc->mtx);
-            if (!node_acc->grad_tensor.defined()) continue;
-            node_grad = node_acc->grad_tensor;  // by-value copy under lock
-        }
-        // Lock released. node_grad is a private copy — safe to pass to backward.
-
-        // Snapshot saved inputs under saved_mtx_ before calling backward().
-        // If clear_saved() runs on another thread (shared-graph scenario), our
-        // snapshot remains valid; the backward() call uses captured inputs.
-        const std::vector<Tensor> saved = node.grad_op_->snapshot_inputs();
-        if (saved.empty()) continue;  // graph was cleared by another backward pass
-
-        OTTER_DBG("backward: phase4 calling op::backward  op=%p saved=%zu",
-                  static_cast<const void*>(node.grad_op_.get()), saved.size());
-
-        // Run the operation's backward pass.
-        auto input_grads = node.grad_op_->backward({node_grad});
-
-        OTTER_DBG("backward: phase4 op::backward done  op=%p grads=%zu",
-                  static_cast<const void*>(node.grad_op_.get()), input_grads.size());
-
-        // Accumulate each input gradient into the corresponding saved input.
-        for (std::size_t i = 0; i < saved.size() && i < input_grads.size(); ++i) {
-            if (saved[i].requires_grad() && input_grads[i].defined()) {
-                OTTER_DBG("backward: phase4 accumulate  i=%zu req_grad=1", i);
-                saved[i].accumulate_grad(input_grads[i]);
-                OTTER_DBG("backward: phase4 accumulate done  i=%zu", i);
-            }
-        }
-    }
-    OTTER_DBG("backward: phase4 traversal done");
-
-    // ── 5. Cleanup pass — release saved state after all grads are accumulated ─
-    // Separate from the traversal above so the backward loop is mutation-free.
-    // clear_saved() also resets grad_op_ on each saved input to break reference
-    // chains and allow Operations to be freed as soon as they are unreachable.
-    OTTER_DBG("backward: phase5 cleanup  retain=%d", static_cast<int>(retain_graph));
-    if (!retain_graph) {
-        for (const Tensor& node : order) {
-            if (node.grad_op_) node.grad_op_->clear_saved();
-        }
-        // Null out the root tensor's grad_op_ so a second backward() call throws
-        // a clear error instead of silently double-counting gradients.
-        grad_op_ = nullptr;
-    }
-    OTTER_DBG("backward: done");
+    GraphExecutor::instance().run(*this, std::move(seed), retain_graph);
 }
 
 } // namespace otter
