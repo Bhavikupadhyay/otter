@@ -99,7 +99,31 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
 
     // Pool miss: allocate a new segment from the device.
     void* raw = nullptr;
-    const cudaError_t err = ::cudaMalloc(&raw, seg);
+    cudaError_t err = ::cudaMalloc(&raw, seg);
+
+    // On OOM: evict the entire free pool and retry once before propagating
+    // the error. Matches release_cache() discipline: drain under mutex_, then
+    // sync + free outside to avoid holding a lock during slow driver calls.
+    if (err == cudaErrorMemoryAllocation) {
+        OTTER_DBG("cuda_memory_manager: OOM on seg=%zu — evicting pool and retrying", seg);
+        std::vector<void*> evicted;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            evicted.reserve(free_pool_.size());
+            for (auto& [sz, rec] : free_pool_) {
+                bytes_reserved_ -= rec.segment_size;
+                evicted.push_back(static_cast<void*>(rec.ptr));
+            }
+            free_pool_.clear();
+        }
+        cudaError_t sync_err = ::cudaDeviceSynchronize();
+        assert(sync_err == cudaSuccess &&
+               "CUDAMemoryManager::allocate: cudaDeviceSynchronize failed during eviction");
+        (void)sync_err;
+        for (void* p : evicted) ::cudaFree(p);
+        err = ::cudaMalloc(&raw, seg);  // single retry
+    }
+
     if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
     if (err != cudaSuccess)
         throw std::runtime_error(
