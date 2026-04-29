@@ -67,53 +67,61 @@ void GraphExecutor::worker_loop() {
 // prevent a spurious zero when the current node unblocks at least one successor.
 
 void GraphExecutor::process_node(Tensor node) {
-    // ── Early exits all decrement pending_ and notify if zero ─────────────────
-    auto finish = [this] {
-        if (pending_.fetch_sub(1, std::memory_order_acq_rel) == 1)
-            done_cv_.notify_one();
-    };
+    // All Buffer-holding locals (node_grad, saved, input_grads, and node itself)
+    // are owned inside this lambda. The lambda move-captures node so that the
+    // function parameter is empty by the time the lambda returns. All refs are
+    // released before pending_ is decremented below.
+    //
+    // Why this matters: done_cv_ fires when pending_ reaches 0. If we decremented
+    // pending_ while worker-local Tensors were still alive, the main thread could
+    // observe bytes_allocated() > 0 before those refs drop — a spurious failure
+    // under slow execution (e.g. compute-sanitizer racecheck). This is not a GPU
+    // race; it is a CPU ref-count ordering issue.
+    [node = std::move(node), this]() mutable {
+        if (!node.grad_op_) return;
 
-    if (!node.grad_op_) { finish(); return; }
-
-    // Read accumulated gradient under lock.
-    Tensor node_grad;
-    {
-        auto acc = std::atomic_load(&node.grad_accum_);
-        if (!acc) { finish(); return; }
-        std::lock_guard<std::mutex> lock(acc->mtx);
-        if (!acc->grad_tensor.defined()) { finish(); return; }
-        node_grad = acc->grad_tensor;  // by-value copy under lock
-    }
-
-    const std::vector<Tensor> saved = node.grad_op_->snapshot_inputs();
-    if (saved.empty()) { finish(); return; }
-
-    auto input_grads = node.grad_op_->backward({node_grad});
-
-    // Accumulate, then decrement predecessor dep_counts.
-    for (std::size_t i = 0; i < saved.size() && i < input_grads.size(); ++i) {
-        if (!saved[i].requires_grad() || !input_grads[i].defined()) continue;
-
-        saved[i].accumulate_grad(input_grads[i]);
-
-        if (!saved[i].grad_op_) continue;
-        auto it = dep_counts_.find(saved[i].grad_op_.get());
-        if (it == dep_counts_.end()) continue;
-
-        // fetch_sub returns the old value. If it was 1, dep_count just hit 0.
-        // Increment pending_ for the new node BEFORE decrementing for self so
-        // pending_ never crosses zero while work remains.
-        if (it->second.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            pending_.fetch_add(1, std::memory_order_relaxed);
-            {
-                std::lock_guard<std::mutex> qlock(queue_mtx_);
-                ready_queue_.push_back(saved[i]);
-            }
-            queue_cv_.notify_one();
+        // Read accumulated gradient under lock.
+        Tensor node_grad;
+        {
+            auto acc = std::atomic_load(&node.grad_accum_);
+            if (!acc) return;
+            std::lock_guard<std::mutex> lock(acc->mtx);
+            if (!acc->grad_tensor.defined()) return;
+            node_grad = acc->grad_tensor;  // by-value copy under lock
         }
-    }
 
-    finish();
+        const std::vector<Tensor> saved = node.grad_op_->snapshot_inputs();
+        if (saved.empty()) return;
+
+        auto input_grads = node.grad_op_->backward({node_grad});
+
+        // Accumulate, then decrement predecessor dep_counts.
+        for (std::size_t i = 0; i < saved.size() && i < input_grads.size(); ++i) {
+            if (!saved[i].requires_grad() || !input_grads[i].defined()) continue;
+
+            saved[i].accumulate_grad(input_grads[i]);
+
+            if (!saved[i].grad_op_) continue;
+            auto it = dep_counts_.find(saved[i].grad_op_.get());
+            if (it == dep_counts_.end()) continue;
+
+            // fetch_sub returns the old value. If it was 1, dep_count just hit 0.
+            // Increment pending_ for the new node BEFORE decrementing for self so
+            // pending_ never crosses zero while work remains.
+            if (it->second.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                pending_.fetch_add(1, std::memory_order_relaxed);
+                {
+                    std::lock_guard<std::mutex> qlock(queue_mtx_);
+                    ready_queue_.push_back(saved[i]);
+                }
+                queue_cv_.notify_one();
+            }
+        }
+    }();  // all locals destroyed here
+
+    // Decrement pending_ only after all Buffer refs from this node are released.
+    if (pending_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        done_cv_.notify_one();
 }
 
 // ── run ───────────────────────────────────────────────────────────────────────
