@@ -15,6 +15,8 @@ add_subdirectory(cpu)
 
 if(OTTER_CUDA)
     target_compile_definitions(otter_core PRIVATE OTTER_CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    target_link_libraries(otter_core PUBLIC CUDA::cudart)
     add_library(otter_cuda ALIAS otter_core)
     add_subdirectory(cuda)
 endif()
