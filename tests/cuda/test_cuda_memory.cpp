@@ -98,6 +98,38 @@ void test_cuda_A7_release_cache_flushes_pool_reserved_to_zero() {
     CHECK(cuda_backend().memory_manager()->bytes_reserved() == 0);
 }
 
+void test_cuda_A8_eviction_drains_pool_not_live_allocation() {
+    std::cout << "[CUDA A8] eviction drains pool but not live allocation\n";
+    constexpr std::size_t n = 131072; // >= 1 MB — large path
+    cuda_backend().memory_manager()->release_cache(); // clean slate
+
+    Tensor t1 = Tensor::zeros({n}, cuda_backend());
+    const std::size_t live_bytes    = cuda_backend().memory_manager()->bytes_allocated();
+    const std::size_t live_reserved = cuda_backend().memory_manager()->bytes_reserved();
+    CHECK(live_bytes > 0);
+
+    {
+        // Allocate and immediately free a second large tensor so it enters the pool.
+        Tensor t2 = Tensor::zeros({n}, cuda_backend());
+        (void)t2;
+    }
+    // t2 is pooled: bytes_reserved grew beyond the t1-only baseline.
+    CHECK(cuda_backend().memory_manager()->bytes_reserved() > live_reserved);
+
+    // Evict the pool — same operation the OOM retry path executes internally.
+    cuda_backend().memory_manager()->release_cache();
+
+    // Pool gone: reserved must be back to the t1-only baseline.
+    // Large allocations round up to a segment, so reserved != allocated for
+    // live large tensors — compare against the captured baseline instead.
+    CHECK(cuda_backend().memory_manager()->bytes_reserved() == live_reserved);
+    CHECK(cuda_backend().memory_manager()->bytes_allocated() == live_bytes);
+
+    // t1 must still be valid — live allocation was not touched by eviction.
+    auto vals = t1.to_vector<float>();
+    CHECK(vals.size() == n);
+}
+
 void run_cuda_memory_tests() {
     test_cuda_A1_bytes_allocated_starts_at_zero();
     test_cuda_A2_allocate_increments_free_decrements();
@@ -106,6 +138,7 @@ void run_cuda_memory_tests() {
     test_cuda_A5_small_alloc_reserved_equals_allocated();
     test_cuda_A6_large_alloc_pool_hit_does_not_grow_reserved();
     test_cuda_A7_release_cache_flushes_pool_reserved_to_zero();
+    test_cuda_A8_eviction_drains_pool_not_live_allocation();
 }
 
 } // namespace otter::test

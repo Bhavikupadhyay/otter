@@ -35,6 +35,15 @@ public:
     // boundaries. Re-allocating after a release incurs full mmap cost.
     virtual void release_cache() noexcept = 0;
 
+    // Copy `bytes` bytes from host pointer `src` into device allocation `dst`.
+    // `dst` must have been returned by this manager's allocate().
+    // CPU backends: plain memcpy. CUDA backends: cudaMemcpy(HostToDevice).
+    virtual void copy_from_host(void* dst, const void* src, std::size_t bytes) = 0;
+
+    // Zero-fill `bytes` bytes at device allocation `dst`.
+    // `dst` must have been returned by this manager's allocate().
+    virtual void zero_fill(void* dst, std::size_t bytes) = 0;
+
     [[nodiscard]] virtual Device      device()          const noexcept = 0;
     [[nodiscard]] virtual std::size_t bytes_allocated() const noexcept = 0;
     [[nodiscard]] virtual std::size_t bytes_reserved()  const noexcept = 0;

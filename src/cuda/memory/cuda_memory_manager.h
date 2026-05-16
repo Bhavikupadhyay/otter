@@ -57,6 +57,9 @@ public:
     void free(std::byte* ptr) noexcept override;
     void release_cache() noexcept override;
 
+    void copy_from_host(void* dst, const void* src, std::size_t bytes) override;
+    void zero_fill(void* dst, std::size_t bytes) override;
+
     [[nodiscard]] Device      device()          const noexcept override;
     [[nodiscard]] std::size_t bytes_allocated() const noexcept override;
     [[nodiscard]] std::size_t bytes_reserved()  const noexcept override;
@@ -74,6 +77,11 @@ private:
     std::size_t compute_segment_size(std::size_t bytes) const noexcept {
         return std::max(detail::next_power_of_2(bytes), kMinSegmentSize);
     }
+
+    // Drains free_pool_ under mutex_, decrements bytes_reserved_ for each
+    // evicted segment, and returns the raw pointers. Caller must
+    // cudaDeviceSynchronize then cudaFree each pointer outside the lock.
+    std::vector<void*> drain_pool();
 
     std::unordered_map<std::byte*, Rec>  active_;    // live allocations, keyed by ptr
     std::multimap<std::size_t,     Rec>  free_pool_; // cached large segments, keyed by segment_size
