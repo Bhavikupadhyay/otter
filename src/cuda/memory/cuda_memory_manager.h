@@ -75,6 +75,11 @@ private:
         return std::max(detail::next_power_of_2(bytes), kMinSegmentSize);
     }
 
+    // Drains free_pool_ under mutex_, decrements bytes_reserved_ for each
+    // evicted segment, and returns the raw pointers. Caller must
+    // cudaDeviceSynchronize then cudaFree each pointer outside the lock.
+    std::vector<void*> drain_pool();
+
     std::unordered_map<std::byte*, Rec>  active_;    // live allocations, keyed by ptr
     std::multimap<std::size_t,     Rec>  free_pool_; // cached large segments, keyed by segment_size
     mutable std::mutex                   mutex_;     // protects active_, free_pool_, both counters

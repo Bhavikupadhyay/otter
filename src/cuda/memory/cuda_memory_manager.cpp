@@ -41,6 +41,18 @@ CUDAMemoryManager::~CUDAMemoryManager() noexcept {
     for (void* p : pool_ptrs) ::cudaFree(p);
 }
 
+std::vector<void*> CUDAMemoryManager::drain_pool() {
+    std::vector<void*> evicted;
+    std::lock_guard<std::mutex> lock(mutex_);
+    evicted.reserve(free_pool_.size());
+    for (auto& [sz, rec] : free_pool_) {
+        bytes_reserved_ -= rec.segment_size;
+        evicted.push_back(static_cast<void*>(rec.ptr));
+    }
+    free_pool_.clear();
+    return evicted;
+}
+
 std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment) {
     if (bytes == 0)
         throw std::invalid_argument(
@@ -60,7 +72,18 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
     // ── Small path: direct cudaMalloc, never pooled ───────────────────────────
     if (bytes < kSmallAllocThreshold) {
         void* raw = nullptr;
-        const cudaError_t err = ::cudaMalloc(&raw, bytes);
+        cudaError_t err = ::cudaMalloc(&raw, bytes);
+        if (err == cudaErrorMemoryAllocation) {
+            OTTER_DBG("cuda_memory_manager: small OOM bytes=%zu — evicting pool and retrying", bytes);
+            auto evicted = drain_pool();
+            const cudaError_t sync_err = ::cudaDeviceSynchronize();
+            if (sync_err != cudaSuccess)
+                throw std::runtime_error(
+                    std::string("CUDAMemoryManager: cudaDeviceSynchronize failed during eviction: ")
+                    + ::cudaGetErrorString(sync_err));
+            for (void* p : evicted) ::cudaFree(p);
+            err = ::cudaMalloc(&raw, bytes);
+        }
         if (err == cudaErrorMemoryAllocation) throw std::bad_alloc();
         if (err != cudaSuccess)
             throw std::runtime_error(
@@ -106,16 +129,7 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
     // sync + free outside to avoid holding a lock during slow driver calls.
     if (err == cudaErrorMemoryAllocation) {
         OTTER_DBG("cuda_memory_manager: OOM on seg=%zu — evicting pool and retrying", seg);
-        std::vector<void*> evicted;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            evicted.reserve(free_pool_.size());
-            for (auto& [sz, rec] : free_pool_) {
-                bytes_reserved_ -= rec.segment_size;
-                evicted.push_back(static_cast<void*>(rec.ptr));
-            }
-            free_pool_.clear();
-        }
+        auto evicted = drain_pool();
         const cudaError_t sync_err = ::cudaDeviceSynchronize();
         if (sync_err != cudaSuccess)
             throw std::runtime_error(
