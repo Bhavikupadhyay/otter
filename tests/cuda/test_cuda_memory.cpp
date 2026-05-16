@@ -125,7 +125,7 @@ void test_cuda_A8_eviction_drains_pool_not_live_allocation() {
     CHECK(cuda_backend().memory_manager()->bytes_allocated() == live_bytes);
 
     // t1 must still be valid — live allocation was not touched by eviction.
-    auto vals = t1.to_vector();
+    auto vals = t1.to_vector<float>();
     CHECK(vals.size() == n);
 }
 
