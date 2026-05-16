@@ -104,7 +104,8 @@ void test_cuda_A8_eviction_drains_pool_not_live_allocation() {
     cuda_backend().memory_manager()->release_cache(); // clean slate
 
     Tensor t1 = Tensor::zeros({n}, cuda_backend());
-    const std::size_t live_bytes = cuda_backend().memory_manager()->bytes_allocated();
+    const std::size_t live_bytes    = cuda_backend().memory_manager()->bytes_allocated();
+    const std::size_t live_reserved = cuda_backend().memory_manager()->bytes_reserved();
     CHECK(live_bytes > 0);
 
     {
@@ -112,16 +113,16 @@ void test_cuda_A8_eviction_drains_pool_not_live_allocation() {
         Tensor t2 = Tensor::zeros({n}, cuda_backend());
         (void)t2;
     }
-    // t2 is pooled: bytes_reserved > bytes_allocated
-    CHECK(cuda_backend().memory_manager()->bytes_reserved() >
-          cuda_backend().memory_manager()->bytes_allocated());
+    // t2 is pooled: bytes_reserved grew beyond the t1-only baseline.
+    CHECK(cuda_backend().memory_manager()->bytes_reserved() > live_reserved);
 
     // Evict the pool — same operation the OOM retry path executes internally.
     cuda_backend().memory_manager()->release_cache();
 
-    // Pool gone: reserved must equal allocated (only the live t1 segment remains).
-    CHECK(cuda_backend().memory_manager()->bytes_reserved() ==
-          cuda_backend().memory_manager()->bytes_allocated());
+    // Pool gone: reserved must be back to the t1-only baseline.
+    // Large allocations round up to a segment, so reserved != allocated for
+    // live large tensors — compare against the captured baseline instead.
+    CHECK(cuda_backend().memory_manager()->bytes_reserved() == live_reserved);
     CHECK(cuda_backend().memory_manager()->bytes_allocated() == live_bytes);
 
     // t1 must still be valid — live allocation was not touched by eviction.
