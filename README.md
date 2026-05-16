@@ -1,6 +1,6 @@
 # OTTER
 
-Otter is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, runs on a pluggable multi-backend kernel layer, and installs as a CMake static library. CPU and CUDA backends are both supported.
+Otter is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, dispatches kernels through a pluggable backend layer, and installs as a CMake static library. CPU and CUDA backends are both supported.
 
 ```cpp
 #include "otter/tensor.h"
@@ -34,6 +34,59 @@ for (int step = 0; step < 100; ++step) {
 ```
 
 The forward pass traces a computation graph. `.backward()` traverses it in reverse topological order and accumulates `∂loss/∂param` into every leaf tensor marked `requires_grad=true`. The graph is freed after each pass unless `retain_graph=true` is set.
+
+---
+
+## Architecture
+
+```mermaid
+graph TD
+    User["User Code"]
+
+    subgraph Value["Value Layer"]
+        Tensor["Tensor\nvalue type · shared Buffer · autograd state"]
+        Buffer["Buffer\nRAII · Passkey-gated raw pointer"]
+        Tensor --> Buffer
+    end
+
+    subgraph BackendLayer["Backend"]
+        BE["Backend\nowns MemoryManager + KernelEngine"]
+        MM["MemoryManager\nallocate · free · release_cache\ncopy_from_host · zero_fill"]
+        KE["KernelEngine\nop dispatcher registry"]
+        BE --> MM
+        BE --> KE
+    end
+
+    subgraph CPU["CPU"]
+        CPUMM["CPUMemoryManager\nmmap pool · posix_memalign small path"]
+        CPUKE["CPUKernelEngine\nscalar loops"]
+        CPUMM --> CPUKE
+    end
+
+    subgraph CUDA["CUDA"]
+        CUDAMM["CUDAMemoryManager\ncudaMalloc pool · reactive OOM eviction"]
+        CUDAKE["CUDAKernelEngine\nstream-async kernel launches"]
+        Stream["CUDAStream\nowned by CUDABackend"]
+        CUDAMM --> CUDAKE
+        CUDAKE --> Stream
+    end
+
+    subgraph Autograd["Autograd"]
+        Execute["Op::execute()\ngraph wiring — the only place"]
+        Executor["GraphExecutor\n4-worker thread pool · topo traversal"]
+        GradAcc["GradAccumulator\nmutex-protected · shared across Tensor copies"]
+        Execute --> Executor
+        Executor --> GradAcc
+    end
+
+    User --> Tensor
+    Buffer --> MM
+    MM --> CPUMM
+    MM --> CUDAMM
+    KE --> CPUKE
+    KE --> CUDAKE
+    Tensor --> Execute
+```
 
 ---
 
@@ -109,7 +162,7 @@ Kernels launch asynchronously on a non-default `cudaStream_t` owned by the backe
 
 Double-precision atomic accumulations (used by `sum` and `reduce_to`) use a portable CAS loop that works on SM 2.0+. Hardware `atomicAdd(double*)` (SM 6.0+) is not required.
 
-The CUDA memory manager maintains a pool allocator (`free_pool_` multimap, 2 MB minimum segment). Freed buffers are returned to the pool and reused on the next allocation of equal or smaller size. `release_cache()` returns all pooled memory to the driver.
+The CUDA memory manager maintains a pool allocator (`free_pool_` multimap, 2 MB minimum segment). Freed large buffers return to the pool and are reused on the next allocation of equal or smaller size. On `cudaErrorMemoryAllocation`, the allocator drains the entire pool, synchronizes the device, and retries before throwing `std::bad_alloc` — so an allocation that fails while cached segments exist will succeed after eviction rather than crash. `release_cache()` returns all pooled memory to the driver explicitly.
 
 ---
 
@@ -125,7 +178,7 @@ Concurrent `backward()` calls on separate computation graphs that share a leaf w
 
 ---
 
-## Architecture
+## Design notes
 
 `Tensor` is a value type. Copies share one `Buffer` via `shared_ptr` with independent shape, stride, and offset metadata. Views are zero-copy; `contiguous()` copies only when the strides are non-standard.
 
@@ -162,47 +215,53 @@ t.to_vector<double>();          // host-side copy in logical row-major order
 ### CPU only
 
 ```bash
-cmake -B build/debug   -GNinja -DCMAKE_BUILD_TYPE=Debug   -DCMAKE_CXX_COMPILER=clang++
-cmake -B build/release -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
+cmake -B build/debug   -GNinja -DCMAKE_BUILD_TYPE=Debug
+cmake -B build/release -GNinja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/debug
 cmake --build build/release
 ./build/debug/tests/otter_cpu_tests
 ./build/release/tests/otter_cpu_tests
 ```
 
-### With CUDA (requires NVIDIA GPU and CUDA toolkit)
+### With CUDA
+
+Requires NVIDIA GPU and CUDA toolkit 11.2+.
 
 ```bash
-cmake -B build/cuda/debug   -GNinja -DCMAKE_BUILD_TYPE=Debug   \
-      -DCMAKE_CXX_COMPILER=clang++ -DOTTER_CUDA=ON
-cmake -B build/cuda/release -GNinja -DCMAKE_BUILD_TYPE=Release  \
-      -DCMAKE_CXX_COMPILER=clang++ -DOTTER_CUDA=ON
+cmake -B build/cuda/debug -GNinja -DCMAKE_BUILD_TYPE=Debug \
+      -DOTTER_CUDA=ON \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+      -DCMAKE_CUDA_ARCHITECTURES=native
+
+cmake -B build/cuda/release -GNinja -DCMAKE_BUILD_TYPE=Release \
+      -DOTTER_CUDA=ON \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+      -DCMAKE_CUDA_ARCHITECTURES=native
+
 cmake --build build/cuda/debug
 cmake --build build/cuda/release
+
 ./build/cuda/debug/tests/otter_cpu_tests
 ./build/cuda/debug/tests/otter_cuda_tests
 ./build/cuda/debug/tests/otter_cross_tests
-./build/cuda/release/tests/otter_cpu_tests
-./build/cuda/release/tests/otter_cuda_tests
-./build/cuda/release/tests/otter_cross_tests
 ```
 
-With `-DOTTER_CUDA=ON`, the build currently produces three test executables:
+`/usr/local/cuda/bin/nvcc` is a symlink to whatever toolkit version is installed. Replace `native` with a specific SM number (e.g. `86` for Ampere, `89` for Ada) when cross-compiling or targeting CI hardware. Pass the full versioned path (e.g. `/usr/local/cuda-12.5/bin/nvcc`) if multiple toolkit versions are installed.
 
-- `otter_cpu_tests`
-- `otter_cuda_tests`
-- `otter_cross_tests`
+Debug builds enable `-fsanitize=address,undefined` on CPU only; ASan is incompatible with the CUDA runtime and is disabled automatically when `-DOTTER_CUDA=ON` is set. Both builds compile with `-Wall -Wextra -Werror` scoped to C++ only.
 
-By default CMake targets the GPU in the machine. To target a specific architecture (e.g. for CI or cross-compilation), pass `-DCMAKE_CUDA_ARCHITECTURES=75` at configure time. Use `native` to auto-detect.
+### Requirements
 
-Debug builds enable `-fsanitize=address,undefined` (CPU only; incompatible with the CUDA runtime). Both compile with `-Wall -Wextra -Werror` scoped to C++ only — nvcc uses its own error flags.
-
----
-
-## Requirements
-
-- C++17 compiler (Clang 10+ or GCC 9+)
+- C++17 compiler (GCC 9+ or Clang 10+)
 - CMake 3.20+
 - Ninja (optional, faster builds)
 - Linux or macOS for CPU builds (`mmap` and `posix_memalign` required)
-- CUDA toolkit 11+ and an NVIDIA GPU (SM 2.0+) for `-DOTTER_CUDA=ON`
+- CUDA toolkit 11.2+ and an NVIDIA GPU for `-DOTTER_CUDA=ON`
+
+---
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).
+
+Copyright 2026 Bhavik Kethan Upadhyay
