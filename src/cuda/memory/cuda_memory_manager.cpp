@@ -116,10 +116,11 @@ std::byte* CUDAMemoryManager::allocate(std::size_t bytes, std::size_t alignment)
             }
             free_pool_.clear();
         }
-        cudaError_t sync_err = ::cudaDeviceSynchronize();
-        assert(sync_err == cudaSuccess &&
-               "CUDAMemoryManager::allocate: cudaDeviceSynchronize failed during eviction");
-        (void)sync_err;
+        const cudaError_t sync_err = ::cudaDeviceSynchronize();
+        if (sync_err != cudaSuccess)
+            throw std::runtime_error(
+                std::string("CUDAMemoryManager: cudaDeviceSynchronize failed during eviction: ")
+                + ::cudaGetErrorString(sync_err));
         for (void* p : evicted) ::cudaFree(p);
         err = ::cudaMalloc(&raw, seg);  // single retry
     }
@@ -194,15 +195,15 @@ void CUDAMemoryManager::release_cache() noexcept {
 
     // Synchronize device before freeing — documented as a full checkpoint fence.
     // cudaDeviceSynchronize and cudaFree are thread-safe; no external lock needed.
-    cudaError_t err = ::cudaDeviceSynchronize();
-    assert(err == cudaSuccess &&
+    const cudaError_t sync_err = ::cudaDeviceSynchronize();
+    assert(sync_err == cudaSuccess &&
            "CUDAMemoryManager::release_cache: cudaDeviceSynchronize failed");
-    (void)err;
+    (void)sync_err;
     for (void* p : to_free) {
-        err = ::cudaFree(p);
-        assert(err == cudaSuccess &&
+        const cudaError_t free_err = ::cudaFree(p);
+        assert(free_err == cudaSuccess &&
                "CUDAMemoryManager::release_cache: cudaFree failed");
-        (void)err;
+        (void)free_err;
     }
     OTTER_DBG("cuda_memory_manager: release_cache done freed=%zu", to_free.size());
 }

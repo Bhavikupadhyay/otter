@@ -119,13 +119,32 @@ void launch_binary_strided(CUDAKernelEngine* engine,
     std::size_t* d_strides_a = nullptr;
     std::size_t* d_strides_b = nullptr;
 
+    // cudaMallocAsync + cudaFreeAsync: stream-ordered pairing. All three are
+    // queued on spec.stream so the free executes after the kernel on the same
+    // stream. Requires CUDA 11.2+ (same requirement as cudaFreeAsync already
+    // present in this file). Cleanup on partial failure is sequential.
     cudaError_t e;
-    e = ::cudaMalloc(&d_shape,     ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_strides_b, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
+    e = ::cudaMallocAsync(&d_shape,     ndim * sizeof(std::size_t), spec.stream);
+    if (e != cudaSuccess) throw std::runtime_error(
+        std::string("launch_binary_strided: cudaMallocAsync(d_shape) failed: ")
+        + ::cudaGetErrorString(e));
+    e = ::cudaMallocAsync(&d_strides_a, ndim * sizeof(std::size_t), spec.stream);
+    if (e != cudaSuccess) {
+        ::cudaFreeAsync(d_shape, spec.stream);
+        throw std::runtime_error(
+            std::string("launch_binary_strided: cudaMallocAsync(d_strides_a) failed: ")
+            + ::cudaGetErrorString(e));
+    }
+    e = ::cudaMallocAsync(&d_strides_b, ndim * sizeof(std::size_t), spec.stream);
+    if (e != cudaSuccess) {
+        ::cudaFreeAsync(d_shape,     spec.stream);
+        ::cudaFreeAsync(d_strides_a, spec.stream);
+        throw std::runtime_error(
+            std::string("launch_binary_strided: cudaMallocAsync(d_strides_b) failed: ")
+            + ::cudaGetErrorString(e));
+    }
 
-    // Async copies: queued on spec.stream, complete before the kernel reads them
-    // because all three are submitted ahead of the kernel on the same stream.
+    // Async copies queued on spec.stream — complete before the kernel reads them.
     e = ::cudaMemcpyAsync(d_shape,     out.shape().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
     e = ::cudaMemcpyAsync(d_strides_a, a.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
     e = ::cudaMemcpyAsync(d_strides_b, b.stride().data(),   ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
@@ -146,8 +165,6 @@ void launch_binary_strided(CUDAKernelEngine* engine,
         (void)err;
     }
 
-    // Stream-ordered free: driver queues these behind the kernel on spec.stream.
-    // Safe whether sync_after is true or false. Requires CUDA 11.2+.
     ::cudaFreeAsync(d_shape,     spec.stream);
     ::cudaFreeAsync(d_strides_a, spec.stream);
     ::cudaFreeAsync(d_strides_b, spec.stream);
@@ -185,8 +202,17 @@ void launch_unary_strided(CUDAKernelEngine* engine,
     std::size_t* d_strides_a = nullptr;
 
     cudaError_t e;
-    e = ::cudaMalloc(&d_shape,     ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
-    e = ::cudaMalloc(&d_strides_a, ndim * sizeof(std::size_t)); assert(e == cudaSuccess); (void)e;
+    e = ::cudaMallocAsync(&d_shape,     ndim * sizeof(std::size_t), spec.stream);
+    if (e != cudaSuccess) throw std::runtime_error(
+        std::string("launch_unary_strided: cudaMallocAsync(d_shape) failed: ")
+        + ::cudaGetErrorString(e));
+    e = ::cudaMallocAsync(&d_strides_a, ndim * sizeof(std::size_t), spec.stream);
+    if (e != cudaSuccess) {
+        ::cudaFreeAsync(d_shape, spec.stream);
+        throw std::runtime_error(
+            std::string("launch_unary_strided: cudaMallocAsync(d_strides_a) failed: ")
+            + ::cudaGetErrorString(e));
+    }
 
     e = ::cudaMemcpyAsync(d_shape,     out.shape().data(), ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
     e = ::cudaMemcpyAsync(d_strides_a, a.stride().data(),  ndim * sizeof(std::size_t), cudaMemcpyHostToDevice, spec.stream); assert(e == cudaSuccess); (void)e;
