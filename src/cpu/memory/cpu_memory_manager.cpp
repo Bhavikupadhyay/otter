@@ -141,6 +141,14 @@ void CPUMemoryManager::release_cache() noexcept {
     free_pool_.clear();
 }
 
+void CPUMemoryManager::copy_from_host(void* dst, const void* src, std::size_t bytes) {
+    std::memcpy(dst, src, bytes);
+}
+
+void CPUMemoryManager::zero_fill(void* dst, std::size_t bytes) {
+    std::memset(dst, 0, bytes);
+}
+
 std::size_t CPUMemoryManager::bytes_allocated() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return bytes_allocated_;

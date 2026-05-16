@@ -28,7 +28,12 @@ class CUDAKernelEngine final : public KernelEngine {
 public:
     CUDAKernelEngine();  // registers all dispatchers
 
-    LaunchSpec default_spec_{};  // configurable; defaults match prior hardcoded values
+    // Written once during single-threaded backend construction (CUDABackend ctor
+    // sets stream; CUDAKernelEngine ctor sets sync_after). Reads by kernel
+    // dispatchers are safe only because no write occurs after construction.
+    // Any future write from a non-construction context requires external
+    // synchronization — there is no lock protecting this field.
+    LaunchSpec default_spec_{};
 
     // ── Forwarding accessors for template dispatcher classes ──────────────────
     // Template dispatcher instances are not KernelEngine subclasses and therefore

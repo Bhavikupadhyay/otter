@@ -57,6 +57,9 @@ public:
     void free(std::byte* ptr) noexcept override;
     void release_cache() noexcept override;
 
+    void copy_from_host(void* dst, const void* src, std::size_t bytes) override;
+    void zero_fill(void* dst, std::size_t bytes) override;
+
     [[nodiscard]] Device      device()          const noexcept override;
     [[nodiscard]] std::size_t bytes_allocated() const noexcept override;
     [[nodiscard]] std::size_t bytes_reserved()  const noexcept override;

@@ -222,6 +222,14 @@ void CUDAMemoryManager::release_cache() noexcept {
     OTTER_DBG("cuda_memory_manager: release_cache done freed=%zu", to_free.size());
 }
 
+void CUDAMemoryManager::copy_from_host(void* dst, const void* src, std::size_t bytes) {
+    OTTER_CUDA_CHECK(::cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice));
+}
+
+void CUDAMemoryManager::zero_fill(void* dst, std::size_t bytes) {
+    OTTER_CUDA_CHECK(::cudaMemset(dst, 0, bytes));
+}
+
 Device CUDAMemoryManager::device() const noexcept {
     return Device::CUDA;
 }

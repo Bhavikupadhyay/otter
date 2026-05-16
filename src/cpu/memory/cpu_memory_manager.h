@@ -58,6 +58,9 @@ public:
 
     void release_cache() noexcept override;
 
+    void copy_from_host(void* dst, const void* src, std::size_t bytes) override;
+    void zero_fill(void* dst, std::size_t bytes) override;
+
     Device      device()          const noexcept override { return Device::CPU; }
     std::size_t bytes_allocated() const noexcept override;
     std::size_t bytes_reserved()  const noexcept override;
