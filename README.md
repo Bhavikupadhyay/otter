@@ -1,5 +1,14 @@
 # OTTER
 
+![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=cplusplus&logoColor=white)
+![CMake](https://img.shields.io/badge/CMake-3.20%2B-blue?logo=cmake&logoColor=white)
+![CUDA](https://img.shields.io/badge/CUDA-11.2%2B-76b900?logo=nvidia&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue)
+![Version](https://img.shields.io/badge/Version-0.1.0-informational)
+![Backends](https://img.shields.io/badge/Backends-CPU%20%7C%20CUDA-76b900?logo=nvidia&logoColor=white)
+![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen)
+
 Otter is a C++ autodiff library. It computes reverse-mode gradients over a computation graph built at runtime, dispatches kernels through a pluggable backend layer, and installs as a CMake static library. CPU and CUDA backends are both supported.
 
 ```cpp
