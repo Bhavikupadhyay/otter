@@ -199,6 +199,8 @@ Concurrent `backward()` calls on separate computation graphs that share a leaf w
 
 `Operation::execute()` owns all graph wiring. `forward()` and `backward()` are pure compute. Leaf tensors get `grad_accum_` at creation; computed tensors get `grad_op_` set by `execute()` and nulled after backward unless `retain_graph=true`.
 
+Execution is eager. `execute()` dispatches each kernel immediately and returns a materialized `Tensor`; the backward pass reifies a full schedule — topological order plus a dependency-count DAG — before running, but each gradient op still executes its kernels eagerly. An optional lazy, compiled path — graph capture, kernel fusion, and per-backend code generation (JIT) — is the next major architectural direction. It is not yet implemented; see [#6](https://github.com/Bhavikupadhyay/otter/issues/6).
+
 ---
 
 ## Debug utilities
